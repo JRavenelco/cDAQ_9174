@@ -768,7 +768,15 @@ if HAS_GUI:
                     and self.infer_thread.last_values is not None):
                 v = self.infer_thread.last_values
                 seq = self.infer_thread.last_seq
-                if len(v) >= 6:
+                if len(v) >= 12:
+                    # Envelope engine (Nivel 1)
+                    cut = "🔴 CORTE" if v[7] > 0.5 else "⚪ reposo"
+                    txt = (f"Seq:{seq}  {cut}  "
+                           f"F_est={v[0]:.4f}V(pk:{v[1]:.4f})  "
+                           f"Env={v[2]:.4f}g  "
+                           f"f₀={v[3]:.1f}Hz  "
+                           f"THD_a={v[5]:.1f}% THD_f={v[6]:.1f}%")
+                elif len(v) >= 6:
                     txt = (f"Seq:{seq}  "
                            f"F: mean={v[0]:.4f} std={v[1]:.4f} "
                            f"rms={v[2]:.4f}  |  "

@@ -416,6 +416,9 @@ def main():
                     help="Desactivar logging CSV")
     ap.add_argument("--no-infer", action="store_true",
                     help="Desactivar inferencia (solo recibir y guardar)")
+    ap.add_argument("--engine", default="basic",
+                    choices=["basic", "envelope"],
+                    help="Motor de inferencia: basic (stats) o envelope (Hilbert+FFT+THD)")
     ap.add_argument("--auto-start", action="store_true",
                     help="Enviar START al sender al iniciar")
     ap.add_argument("--sync", action="store_true",
@@ -424,11 +427,26 @@ def main():
 
     csv_path = args.csv if args.csv else _default_csv_path()
 
+    # Seleccionar motor de inferencia
+    engine = None
+    if not args.no_infer:
+        if args.engine == "envelope":
+            try:
+                from cdaq_inference_engine import EnvelopeInferenceEngine
+                engine = EnvelopeInferenceEngine(fs=2500.0)
+                log.info("Motor de inferencia: EnvelopeInferenceEngine (Hilbert+FFT+THD)")
+            except ImportError as e:
+                log.warning("No se pudo cargar EnvelopeInferenceEngine: %s", e)
+                log.warning("Usando motor básico (stats)")
+        else:
+            log.info("Motor de inferencia: básico (mean/std/rms)")
+
     daemon = ReceiverDaemon(
         sender_ip=args.sender_ip,
         csv_path=csv_path,
         enable_csv=not args.no_csv,
         enable_infer=not args.no_infer,
+        engine=engine,
     )
 
     # Ctrl+C graceful
