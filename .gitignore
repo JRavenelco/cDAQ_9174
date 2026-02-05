@@ -1,0 +1,90 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Vendored libraries (install via pip instead)
+Pruebas/src/lib/
+
+# Embedded git repos
+Pruebas/src/projectAD/
+
+# Generated / heavy content directories
+Pruebas/src/manim_videos/
+Pruebas/src/Springer_Conference_Proceedings_Template_Updated_2022_01_12/
+Pruebas/src/Archivos_referencia/
+Pruebas/src/Imagenes_para_reporte/
+Pruebas/src/Observador/
+Pruebas/src/modelos/
+Pruebas/src/caracterizacion_fuerza/
+
+# Data files (too large for git)
+*.csv
+*.pkl
+*.npy
+*.npz
+*.h5
+*.hdf5
+
+# Large datasets
+SPI_Dataset/
+
+# Other projects (not part of cDAQ)
+levitador-python/
+levitador-benchmark/
+levitador valentin/
+
+# Binary / firmware files
+*.bin
+*.stl
+*.xls
+*.xlsx
+*.pptx
+*.bibtex
+*.exe
+*.exp
+*.lib
+*.dll
+*.so
+*.7z
+*.zip
+*.tar.gz
+*.rar
+*.3mf
+*.pcapng
+*.jfif
+*.webp
+*.mp4
+*.pt
+*.pth
+*.onnx
+*.ipynb
+
+# Documents & media (version separately if needed)
+*.pdf
+*.docx
+*.png
+*.jpg
+*.jpeg
+
+# Large notebooks (>1MB)
+experimentacion_con_modelos_de_friccion*.ipynb
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Logs
+*.log

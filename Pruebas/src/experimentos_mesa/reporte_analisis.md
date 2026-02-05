@@ -1,0 +1,86 @@
+## Hallazgos globales
+[Sesiones] 12 archivos: sesion_20251009_160126…sesion_20251126_170150.csv
+[SR] Vib 2000 Hz; Fuerza 2000 Hz (experimentos_log.csv)
+[Canales guardados] Vib: ai0, ai1; Fuerza: ai0, ai1, ai2, ai3
+[Duraciones] Entre ~2.65 s y ~32.84 s
+
+## Resumen por sesión
+[sesion_20251009_160126]
+Frecuencia: 30 Hz. Duración: 5.70 s.
+Vib ai0: RMS 0.023 g, Pico 58.60 Hz.
+Fuerza ai0: Mean -0.611 V, RMS 0.611 V, Pico 0.88 Hz, Std 0.0002 V, MaxAbs 0.61 V.
+Vib ai0: Centroid 353.5 Hz, WaveletEnergy 2.6.
+
+[sesion_20251009_160148]
+Frecuencia: 40 Hz. Duración: 3.15 s.
+Vib ai0: RMS 0.371 g, Pico 39.05 Hz.
+Fuerza ai0: Mean -0.611 V, RMS 0.611 V, Pico 40.00 Hz, Std 0.0002 V, MaxAbs 0.61 V.
+Vib ai0: Centroid 160.2 Hz, WaveletEnergy 30.5.
+
+[sesion_20251009_160202]
+Frecuencia: 40 Hz. Duración: 4.10 s.
+Vib ai0: RMS 0.247 g, Pico 48.78 Hz.
+Fuerza ai0: Mean -0.611 V, RMS 0.611 V, Pico 0.24 Hz, Std 0.0002 V, MaxAbs 0.61 V.
+Vib ai0: Centroid 158.8 Hz, WaveletEnergy 11.1.
+
+[sesion_20251009_160225]
+Frecuencia: 40 Hz. Duración: 2.65 s.
+Vib ai0: RMS 0.356 g, Pico 39.24 Hz.
+Fuerza ai0: Mean -0.611 V, RMS 0.611 V, Pico 40.00 Hz, Std 0.0002 V, MaxAbs 0.61 V.
+Vib ai0: Centroid 143.2 Hz, WaveletEnergy 20.7.
+
+[sesion_20251009_160239]
+Frecuencia: 50 Hz. Duración: 3.20 s.
+Vib ai0: RMS 0.246 g, Pico 48.75 Hz.
+Fuerza ai0: Mean -0.611 V, RMS 0.611 V, Pico 50.00 Hz, Std 0.0002 V, MaxAbs 0.61 V.
+Vib ai0: Centroid 185.9 Hz, WaveletEnergy 9.7.
+
+[sesion_20251009_160254]
+Frecuencia: 60 Hz. Duración: 3.10 s.
+Vib ai0: RMS 0.192 g, Pico 58.71 Hz.
+Fuerza ai0: Mean -0.610 V, RMS 0.610 V, Pico 0.32 Hz, Std 0.0005 V, MaxAbs 0.61 V.
+Vib ai0: Centroid 160.9 Hz, WaveletEnergy 5.0.
+
+[sesion_20251009_160349]
+Frecuencia: 70 Hz. Duración: 3.40 s.
+Vib ai0: RMS 0.048 g, Pico 68.23 Hz.
+Fuerza ai0: Mean -0.610 V, RMS 0.610 V, Pico 0.29 Hz, Std 0.0003 V, MaxAbs 0.61 V.
+Vib ai0: Centroid 261.1 Hz, WaveletEnergy 0.9.
+
+[sesion_20251009_160406]
+Frecuencia: 80 Hz. Duración: 3.05 s.
+Vib ai0: RMS 0.070 g, Pico 78.03 Hz.
+Fuerza ai0: Mean -0.610 V, RMS 0.610 V, Pico 0.33 Hz, Std 0.0004 V, MaxAbs 0.61 V.
+Vib ai0: Centroid 235.6 Hz, WaveletEnergy 1.9.
+
+[sesion_20251009_160542]
+Frecuencia: 120 Hz. Duración: 20.90 s.
+Vib ai0: RMS 0.223 g, Pico 38.99 Hz.
+Fuerza ai0: Mean -0.593 V, RMS 0.596 V, Pico 0.05 Hz, Std 0.0668 V, MaxAbs 2.30 V.
+Vib ai0: Centroid 161.9 Hz, WaveletEnergy 127.9.
+
+[sesion_20251122_110301]
+Frecuencia: 0 Hz. Duración: 4.65 s.
+Vib ai0: RMS 0.003 g, Pico 0.21 Hz.
+Fuerza ai0: Mean -1.807 V, RMS 1.808 V, Pico 0.21 Hz, Std 0.0600 V, MaxAbs 1.87 V.
+Vib ai0: Centroid 357.0 Hz, WaveletEnergy 0.0.
+
+[sesion_20251122_111833]
+Frecuencia: 0 Hz. Duración: 7.04 s.
+Vib ai0: RMS 0.003 g, Pico 0.14 Hz.
+Fuerza ai0: Mean -0.029 V, RMS 0.148 V, Pico 200.00 Hz, Std 0.1447 V, MaxAbs 0.24 V.
+Vib ai0: Centroid 489.3 Hz, WaveletEnergy 0.0.
+
+[sesion_20251126_170150]
+Frecuencia: 40 Hz. Duración: 32.84 s.
+Vib ai0: RMS 0.051 g, Pico 39.07 Hz.
+Fuerza ai0: Mean -0.019 V, RMS 0.021 V, Pico 40.01 Hz, Std 0.0068 V, MaxAbs 0.04 V.
+Vib ai0: Centroid 400.0 Hz, WaveletEnergy 3.0.
+
+## Interpretación técnica
+[Vibración] Picos cercanos a la consigna (±2 Hz) en 7/10 sesiones.
+[Fuerza] Componente DC promedio |mean| ≈ 0.611 V. Considere HPF o remoción de offset.
+[Fuerza] Se detectan picos significativos (MaxAbs > 1 V) en alguna sesión; posibles transitorios o saturación.
+## Recomendaciones
+[Fuerza: offset] Aplicar HPF (1–2 Hz) o remover offset para resaltar componente dinámica.
+[Vibración: armónicos] Agregar detección de 2×/3× y marcadores en FFT/espectrograma si se requiere.

@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulación de Fresado de Laboratorio Avanzada</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f0f2f5;
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        header {
+            background-color: #005a9c; /* Azul corporativo */
+            color: white;
+            padding: 15px 30px;
+            text-align: center;
+            width: 100%;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            font-size: 1.5em;
+            letter-spacing: 1px;
+        }
+
+        .main-container {
+            display: flex;
+            width: 100%;
+            max-width: 1800px; /* Aumentado para más espacio */
+            margin-top: 20px;
+            flex-grow: 1;
+        }
+
+        .simulation-panel {
+            flex: 1; /* Ocupa la mitad del espacio */
+            padding: 20px;
+            background-color: #fff;
+            margin-right: 10px; /* Espacio entre paneles */
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.05);
+            overflow-y: auto; /* Para contenido largo */
+        }
+
+        .analysis-panel {
+            flex: 1; /* Ocupa la otra mitad */
+            padding: 20px;
+            background-color: #fff;
+            margin-left: 10px; /* Espacio entre paneles */
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .controls-section, .visualization-section, .info-section {
+            background-color: #f9f9f9;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+        }
+
+        h2, h3 {
+            color: #005a9c;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 5px;
+            margin-top: 0;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: #555;
+        }
+
+        input[type="range"], input[type="number"] {
+            width: calc(100% - 22px); /* Ajuste para padding/border */
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        input[type="range"] {
+            cursor: pointer;
+        }
+
+        output {
+            font-weight: bold;
+            color: #007bff;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #e9ecef;
+            color: #495057;
+        }
+
+        canvas {
+            border: 1px solid #000;
+            background-color: #fff;
+            display: block;
+            margin: 0 auto; /* Centrar canvas */
+            max-width: 100%;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+
+        .info-item p {
+            margin: 5px 0;
+        }
+        
+        /* Estilos para el panel de análisis */
+        .data-source-selector {
+            margin-bottom: 20px; /* Espacio antes de las pestañas */
+        }
+        .data-source-selector button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            margin-right: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background-color 0.3s ease;
+        }
+        .data-source-selector button:hover {
+            background-color: #0056b3;
+        }
+        .data-source-selector input[type="file"] {
+            display: none; /* Ocultar input, se activará con JS */
+        }
+
+        .tabs {
+            display: flex;
+            /* margin-top: 20px; No es necesario si .data-source-selector tiene margin-bottom */
+            border-bottom: 1px solid #ccc;
+        }
+
+        .tab-button {
+            padding: 10px 20px;
+            cursor: pointer;
+            border: 1px solid transparent;
+            border-bottom: none;
+            background-color: #f1f1f1;
+            font-size: 1em;
+            border-radius: 4px 4px 0 0;
+            margin-right: 5px;
+            position: relative;
+            bottom: -1px; /* Para que se alinee con el borde inferior */
+        }
+
+        .tab-button.active {
+            background-color: #fff;
+            border-color: #ccc #ccc #fff; /* Borde superior y laterales */
+            font-weight: bold;
+        }
+
+        .tab-content {
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-top: none;
+            background-color: #fff;
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+
+        .tab-pane {
+            display: none; /* Ocultar por defecto */
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        footer {
+            text-align: center;
+            padding: 20px;
+            background-color: #343a40;
+            color: white;
+            width: 100%;
+            margin-top: auto; /* Empuja el footer hacia abajo */
+        }
+
+    </style>
+</head>
+<body>
+    <header>
+        Simulación Avanzada de Fresado y Análisis de Datos
+    </header>
+
+    <div class="main-container">
+        <div class="simulation-panel">
+            <h2>Configuración y Simulación en Vivo</h2>
+            
+            <div class="controls-section">
+                <h3>Panel de Control</h3>
+                <div>
+                    <label for="rpm">Velocidad del Husillo (RPM): <output id="rpmValue">1000</output></label>
+                    <input type="range" id="rpm" name="rpm" min="100" max="5000" value="1000" step="50">
+                </div>
+                <div>
+                    <label for="bedAngle">Ángulo de Bancada (grados): <output id="bedAngleValue">0</output></label>
+                    <input type="range" id="bedAngle" name="bedAngle" min="-45" max="45" value="0" step="1">
+                </div>
+            </div>
+
+            <div class="visualization-section">
+                <h3>Visualización 2D de Fuerzas</h3>
+                <canvas id="forceCanvas" width="600" height="400"></canvas>
+            </div>
+
+            <div class="info-section">
+                <h3>Información del Proceso y Sensores</h3>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <h4>Parámetros del Proceso</h4>
+                        <p>Profundidad de corte (ap): <span id="ap">2</span> mm</p>
+                        <p>Ancho de corte (ae): <span id="ae">10</span> mm</p>
+                        <p>Diámetro Herramienta (D): <span id="D">20</span> mm</p>
+                        <p>Número de Dientes (Z): <span id="Z">4</span></p>
+                        <p>Avance por diente (fz): <span id="fz">0.1</span> mm/diente</p>
+                        <p>Velocidad de Avance (Vf): <span id="Vf">400</span> mm/min</p>
+                        <p>Velocidad de Corte (Vc): <span id="Vc">62.8</span> m/min</p>
+                    </div>
+                    <div class="info-item">
+                        <h4>Fuerzas Calculadas</h4>
+                        <table>
+                            <thead>
+                                <tr><th>Componente</th><th>Valor (N)</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr><td>Fuerza Tangencial (Ft)</td><td id="Ft_val">0</td></tr>
+                                <tr><td>Fuerza Radial (Fr)</td><td id="Fr_val">0</td></tr>
+                                <tr><td>Fuerza Axial (Fa)</td><td id="Fa_val">0</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="info-item">
+                        <h4>Especificaciones Sensores</h4>
+                        <p>Celdas de Carga: Kistler 9257B (simuladas)</p>
+                        <p>Sensibilidad Carga (X,Y): -27 pC/N</p>
+                        <p>Sensibilidad Carga (Z): -13 pC/N</p>
+                        <p>Acelerómetros: IEPE (simulados)</p>
+                        <p>Sensibilidad Acelerómetro: 100 mV/g</p>
+                    </div>
+                    <div class="info-item">
+                        <h4>Señales Simuladas (Valores Instantáneos)</h4>
+                        <p>Celda Carga 1 (V): <span id="lc1_val">0</span></p>
+                        <p>Celda Carga 2 (V): <span id="lc2_val">0</span></p>
+                        <p>Celda Carga 3 (V): <span id="lc3_val">0</span></p>
+                        <p>Celda Carga 4 (V): <span id="lc4_val">0</span></p>
+                        <p>Acelerómetro X (mV): <span id="accX_val">0</span></p>
+                        <p>Acelerómetro Y (mV): <span id="accY_val">0</span></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="analysis-panel">
+            <h2>Análisis de Datos</h2>
+            <div class="data-source-selector">
+                <button id="analyzeSimulationBtn">Analizar Simulación</button>
+                <button id="loadExperimentBtn">Cargar Experimento (CSV)</button>
+                <input type="file" id="csvFileInput" accept=".csv" style="display: none;">
+            </div>
+
+            <div class="tabs">
+                <button class="tab-button active" onclick="openTab(event, 'timeDomainTab')">Dominio del Tiempo</button>
+                <button class="tab-button" onclick="openTab(event, 'frequencyDomainTab')">Dominio de la Frecuencia</button>
+                <button class="tab-button" onclick="openTab(event, 'diagnosticsTab')">Diagnóstico y Log</button>
+            </div>
+
+            <div id="timeDomainTab" class="tab-pane active">
+                <h3>Análisis en Dominio del Tiempo</h3>
+                <p>Aquí se mostrarán gráficos de señales crudas, fuerzas descompuestas y estadísticas.</p>
+                <!-- Contenido futuro: gráficos, tablas -->
+            </div>
+
+            <div id="frequencyDomainTab" class="tab-pane">
+                <h3>Análisis en Dominio de la Frecuencia</h3>
+                <p>Aquí se mostrarán espectros de frecuencia (FFT/PSD) e identificación de picos.</p>
+                <!-- Contenido futuro: gráficos -->
+            </div>
+
+            <div id="diagnosticsTab" class="tab-pane">
+                <h3>Diagnóstico del Proceso y Log</h3>
+                <p>Aquí se mostrarán indicadores de salud del proceso y el log del experimento cargado.</p>
+                <!-- Contenido futuro: indicadores, información del archivo -->
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <p>&copy; 2025 - Proyecto de Doctorado - Simulación y Análisis de Mecanizado</p>
+    </footer>
+
+    <script>
+        window.experimentalData = null; // To store loaded CSV data globally
+        // Variables globales y constantes del DOM
+        const rpmSlider = document.getElementById('rpm');
+        const rpmValue = document.getElementById('rpmValue');
+        const bedAngleSlider = document.getElementById('bedAngle');
+        const bedAngleValue = document.getElementById('bedAngleValue');
+
+        const apVal = document.getElementById('ap');
+        const aeVal = document.getElementById('ae');
+        const DVal = document.getElementById('D');
+        const ZVal = document.getElementById('Z');
+        const fzVal = document.getElementById('fz');
+        const VfVal = document.getElementById('Vf');
+        const VcVal = document.getElementById('Vc');
+
+        const Ft_display = document.getElementById('Ft_val');
+        const Fr_display = document.getElementById('Fr_val');
+        const Fa_display = document.getElementById('Fa_val');
+
+        const lc1_display = document.getElementById('lc1_val');
+        const lc2_display = document.getElementById('lc2_val');
+        const lc3_display = document.getElementById('lc3_val');
+        const lc4_display = document.getElementById('lc4_val');
+        const accX_display = document.getElementById('accX_val');
+        const accY_display = document.getElementById('accY_val');
+
+        const canvas = document.getElementById('forceCanvas');
+        const ctx = canvas.getContext('2d');
+        const loadExperimentBtn = document.getElementById('loadExperimentBtn'); // Moved for correct declaration order
+        const csvFileInput = document.getElementById('csvFileInput');   // Moved for correct declaration order
+
+        // Parámetros de la herramienta y corte (ejemplos)
+        let D_param = 20; // Diámetro herramienta (mm) - Renombrado para evitar conflicto con DVal
+        let Z_param = 4;  // Número de dientes - Renombrado
+        let ap_param = 2; // Profundidad de corte (mm) - Renombrado
+        let ae_param = 10; // Ancho de corte (mm) - Renombrado
+        let fz_param = 0.1; // Avance por diente (mm/diente) - Renombrado
+        let kc = 1800; // Presión específica de corte (N/mm^2) - Acero
+        let K_radial_factor = 0.4; // Factor para Fr respecto a Ft
+        let K_axial_factor = 0.3;  // Factor para Fa respecto a Ft
+
+        // Simulación de sensores
+        const loadCellSensitivity = 0.005; // V/N (simplificado)
+        const accelerometerSensitivity = 0.1; // V/g (100mV/g)
+
+        function updateParametersDisplay() {
+            let N = parseFloat(rpmSlider.value);
+            // Usar las variables renombradas para cálculos internos
+            let Vf_calc = N * Z_param * fz_param;
+            let Vc_calc = (Math.PI * D_param * N) / 1000;
+
+            rpmValue.textContent = N;
+            bedAngleValue.textContent = bedAngleSlider.value;
+            
+            // Actualizar los spans con los valores de los parámetros (que pueden ser fijos o dinámicos en el futuro)
+            apVal.textContent = ap_param;
+            aeVal.textContent = ae_param;
+            DVal.textContent = D_param;
+            ZVal.textContent = Z_param;
+            fzVal.textContent = fz_param;
+            VfVal.textContent = Vf_calc.toFixed(2);
+            VcVal.textContent = Vc_calc.toFixed(2);
+        }
+
+        function calculateForces() {
+            let N = parseFloat(rpmSlider.value);
+            let angle_deg = parseFloat(bedAngleSlider.value);
+            
+            let Ac = ap_param * fz_param; // Área de la viruta por diente
+            let Ft_avg = kc * Ac * Z_param; // Fuerza tangencial promedio total
+
+            let variation = Math.sin(Date.now() * 0.01 * (N/1000)) * 0.2 + 
+                            (Math.random() - 0.5) * 0.1; 
+            
+            let Ft = Ft_avg * (1 + variation);
+            let Fr = Ft * K_radial_factor * (1 + (Math.random() - 0.5) * 0.15);
+            let Fa = Ft * K_axial_factor * (1 + (Math.random() - 0.5) * 0.15);
+
+            Ft_display.textContent = Ft.toFixed(2);
+            Fr_display.textContent = Fr.toFixed(2);
+            Fa_display.textContent = Fa.toFixed(2);
+
+            return { Ft, Fr, Fa, angle_deg };
+        }
+
+        function simulateSensorReadings(forces) {
+            lc1_display.textContent = (forces.Ft * 0.25 + forces.Fr * 0.15 + (Math.random()-0.5)*5).toFixed(3);
+            lc2_display.textContent = (forces.Ft * 0.25 - forces.Fr * 0.15 + (Math.random()-0.5)*5).toFixed(3);
+            lc3_display.textContent = (forces.Ft * 0.25 + forces.Fr * 0.25 + (Math.random()-0.5)*5).toFixed(3);
+            lc4_display.textContent = (forces.Ft * 0.25 - forces.Fr * 0.25 + (Math.random()-0.5)*5).toFixed(3);
+
+            let vibration_g_x = (forces.Ft / kc) * 0.5 * (1 + Math.sin(Date.now() * 0.05 * (rpmSlider.value/1000)) + (Math.random()-0.5)*0.2);
+            let vibration_g_y = (forces.Fr / kc) * 0.5 * (1 + Math.cos(Date.now() * 0.05 * (rpmSlider.value/1000)) + (Math.random()-0.5)*0.2);
+            
+            accX_display.textContent = (vibration_g_x * 1000 * accelerometerSensitivity).toFixed(2); 
+            accY_display.textContent = (vibration_g_y * 1000 * accelerometerSensitivity).toFixed(2); 
+        }
+
+        function drawForces(forces) {
+            const w = canvas.width;
+            const h = canvas.height;
+            const centerX = w / 2;
+            const centerY = h / 2;
+            const scale = 0.1; 
+
+            ctx.clearRect(0, 0, w, h);
+
+            ctx.strokeStyle = '#aaa';
+            ctx.beginPath();
+            ctx.moveTo(centerX, 0); ctx.lineTo(centerX, h); 
+            ctx.moveTo(0, centerY); ctx.lineTo(w, centerY); 
+            ctx.stroke();
+            ctx.fillStyle = '#aaa';
+            ctx.fillText('Yp', centerX + 5, 10);
+            ctx.fillText('Xp', w - 15, centerY - 5);
+
+            ctx.beginPath();
+            // Usar D_param para el radio de la herramienta
+            ctx.arc(centerX, centerY, D_param / 2 * 2, 0, 2 * Math.PI); 
+            ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';
+            ctx.fill();
+            ctx.strokeStyle = '#333';
+            ctx.stroke();
+
+            ctx.save();
+            ctx.translate(centerX, centerY);
+            ctx.rotate(forces.angle_deg * Math.PI / 180);
+            ctx.translate(-centerX, -centerY);
+
+            ctx.strokeStyle = '#007bff';
+            ctx.beginPath();
+            ctx.moveTo(centerX, 0); ctx.lineTo(centerX, h); 
+            ctx.moveTo(0, centerY); ctx.lineTo(w, centerY); 
+            ctx.stroke();
+            ctx.fillStyle = '#007bff';
+            ctx.fillText('Vb', centerX + 5, 10);
+            ctx.fillText('Ub', w - 15, centerY - 5);
+            
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY);
+            ctx.lineTo(centerX, centerY - forces.Ft * scale);
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.fillStyle = 'red';
+            ctx.fillText('Ft', centerX + 5, centerY - forces.Ft * scale - 5);
+
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY);
+            ctx.lineTo(centerX + forces.Fr * scale, centerY);
+            ctx.strokeStyle = 'green';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.fillStyle = 'green';
+            ctx.fillText('Fr', centerX + forces.Fr * scale + 5, centerY - 5);
+            
+            ctx.restore(); 
+            ctx.lineWidth = 1; 
+        }
+
+                
+        function updateSensors() {
+            // Simulación de tiempo y parámetros
+            let N = parseFloat(rpmSlider.value);
+            let fDiente = N * Z_param / 60; // Frecuencia de paso de diente
+            // 'time' variable is global and incremented in animate()
+
+            let forces = calculateForces(); // Obtener fuerzas actuales
+            let angle_rad = parseFloat(bedAngleSlider.value) * Math.PI / 180;
+
+            // Simulación Celdas de Carga (ejemplo simplificado)
+            for (let i = 0; i < 4; i++) { // Asumiendo 4 celdas de carga
+                const Vi = (forces.Ft * Math.sin(angle_rad + (i * Math.PI/2)) + 
+                            forces.Fr * Math.cos(angle_rad + (i * Math.PI/2))) * loadCellSensitivity +
+                           (Math.random() - 0.5) * 0.02; // mV señal con ruido
+                
+                // Saturar a 1.2V máximo (límite del sensor)
+                const Vout = Math.min(Math.max(Vi, 0), 1.2);
+                
+                document.getElementById(`cell${i+1}`).textContent = Vout.toFixed(3) + ' V';
+                document.getElementById(`cell${i+1}-bar`).style.width = Math.min((Vout / 1.2) * 100, 100) + '%';
+            }
+            
+            // Acelerómetros IEPE (100 mV/g, ±50g rango)
+            const accel1 = 0.4 * Math.sin(2 * Math.PI * fDiente * time) + 
+                           0.1 * Math.sin(2 * Math.PI * 500 * time) + 
+                           (Math.random() - 0.5) * 0.04;
+            const accel2 = 0.4 * Math.sin(2 * Math.PI * fDiente * time + Math.PI/4) + 
+                           0.1 * Math.sin(2 * Math.PI * 500 * time + Math.PI/3) + 
+                           (Math.random() - 0.5) * 0.04;
+            
+            // Convertir a mV (100 mV/g)
+            const V1 = accel1 * 100;
+            const V2 = accel2 * 100;
+            
+            document.getElementById('accel1').textContent = V1.toFixed(1) + ' mV';
+            document.getElementById('accel2').textContent = V2.toFixed(1) + ' mV';
+        }
+
+        csvFileInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const text = e.target.result;
+                    console.log("Archivo CSV cargado. Nombre:", file.name, "Tamaño:", file.size, "bytes.");
+                    parseCSV(text, file.name); // Pass file name for alert
+                };
+                reader.onerror = (e) => {
+                    console.error("Error al leer el archivo:", e);
+                    alert("Error al leer el archivo.");
+                };
+                reader.readAsText(file);
+                // Reset file input to allow re-upload of the same file, 
+                // otherwise 'change' won't fire if the same file is selected again.
+                event.target.value = null; 
+            }
+        });
+
+        function parseCSV(csvText, fileNameForAlert) {
+            if (!csvText || typeof csvText !== 'string') {
+                console.error("Texto CSV inválido o vacío.");
+                alert("El contenido del archivo CSV parece inválido o está vacío.");
+                return { headers: [], data: [] };
+            }
+            
+            const lines = csvText.trim().split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+
+            if (lines.length === 0) {
+                console.log("Archivo CSV vacío o sin contenido útil después de limpiar.");
+                alert("El archivo CSV está vacío o no contiene datos útiles.");
+                return { headers: [], data: [] };
+            }
+
+            const headers = lines[0].split(',').map(header => header.trim());
+            console.log("Cabeceras detectadas:", headers);
+
+            const data = [];
+            for (let i = 1; i < lines.length; i++) {
+                const values = lines[i].split(',').map(value => value.trim());
+                if (values.length === headers.length) {
+                    let rowData = {};
+                    headers.forEach((header, index) => {
+                        const numValue = parseFloat(values[index]);
+                        rowData[header] = isNaN(numValue) ? values[index] : numValue;
+                    });
+                    data.push(rowData);
+                } else {
+                    console.warn(`Línea ${i+1} (${lines[i]}) ignorada: ${values.length} columnas, se esperaban ${headers.length}.`);
+                }
+            }
+
+            console.log(`Datos parseados: ${data.length} filas.`);
+            if (data.length > 0) {
+                console.log("Ejemplo primera fila de datos:", data[0]);
+            }
+            if (data.length > 5) {
+                console.log("Primeras 5 filas de datos:", data.slice(0, 5));
+            } else if (data.length > 0) {
+                console.log("Todos los datos parseados:", data);
+            }
+
+            window.experimentalData = { headers, data, fileName: fileNameForAlert || 'desconocido' }; 
+
+            alert(`Archivo CSV "${fileNameForAlert || 'desconocido'}" cargado y parseado.\nSe encontraron ${headers.length} cabeceras y ${data.length} filas de datos.\nRevisa la consola y la pestaña 'Dominio del Tiempo'.`);
+            
+            displayTimeDomainData(window.experimentalData);
+            // Future: Call functions for other tabs
+            // displayDataInFrequencyDomain(window.experimentalData);
+            // displayDiagnostics(window.experimentalData);
+            return { headers, data };
+        }
+
+        function displayTimeDomainData(expData) {
+            if (!expData || !expData.data || !expData.headers) {
+                console.warn("No hay datos experimentales para mostrar en Dominio del Tiempo.");
+                return;
+            }
+
+            const { headers, data, fileName } = expData;
+            const tabContent = document.getElementById('timeDomainTab');
+            if (!tabContent) {
+                console.error("Elemento 'timeDomainTab' no encontrado.");
+                return;
+            }
+
+            // Clear previous content
+            tabContent.innerHTML = '<h3>Análisis en Dominio del Tiempo</h3>'; 
+
+            const infoDiv = document.createElement('div');
+            infoDiv.innerHTML = `
+                <h4>Datos Cargados: ${fileName}</h4>
+                <p>Número de puntos de datos: ${data.length}</p>
+                <p>Número de canales/columnas: ${headers.length}</p>
+            `;
+            tabContent.appendChild(infoDiv);
+
+            if (data.length > 0) {
+                const table = document.createElement('table');
+                table.style.width = '100%';
+                table.style.borderCollapse = 'collapse';
+                table.style.marginTop = '15px';
+
+                // Create table header
+                const thead = table.createTHead();
+                const headerRow = thead.insertRow();
+                headers.forEach(headerText => {
+                    const th = document.createElement('th');
+                    th.textContent = headerText;
+                    th.style.border = '1px solid #ddd';
+                    th.style.padding = '8px';
+                    th.style.backgroundColor = '#f2f2f2';
+                    headerRow.appendChild(th);
+                });
+
+                // Create table body with first 5 rows (or fewer if less data)
+                const tbody = table.createTBody();
+                const rowsToShow = Math.min(data.length, 5);
+                for (let i = 0; i < rowsToShow; i++) {
+                    const row = tbody.insertRow();
+                    headers.forEach(header => {
+                        const cell = row.insertCell();
+                        cell.textContent = data[i][header];
+                        cell.style.border = '1px solid #ddd';
+                        cell.style.padding = '8px';
+                    });
+                }
+                tabContent.appendChild(table);
+                
+                if(data.length > 5) {
+                    const moreDataP = document.createElement('p');
+                    moreDataP.textContent = `Mostrando las primeras 5 de ${data.length} filas. Vea la consola para todos los datos.`;
+                    moreDataP.style.fontSize = '0.9em';
+                    moreDataP.style.color = '#555';
+                    tabContent.appendChild(moreDataP);
+                }
+            } else {
+                const noDataP = document.createElement('p');
+                noDataP.textContent = 'El archivo CSV no contenía filas de datos.';
+                tabContent.appendChild(noDataP);
+            }
+        }
+
+        // Animación principal
+        function animate() {
+            time += 0.016;
+            updateSensors();
+            requestAnimationFrame(animate);
+        }
+        
+        // Inicializar
+        updateForces();
+        updateFrequency();
+        drawCanvas();
+        animate();
+    </script>
+</body>
+</html>
