@@ -1,0 +1,37 @@
+# ============================================
+# Ignore EVERYTHING by default, then whitelist
+# ============================================
+*
+
+# ── Whitelist: top-level config ──
+!.gitignore
+!README.md
+
+# ── Whitelist: remote_monitoring (main project) ──
+!Pruebas/
+!Pruebas/src/
+!Pruebas/src/remote_monitoring/
+!Pruebas/src/remote_monitoring/*.py
+!Pruebas/src/remote_monitoring/README.md
+
+# ── Whitelist: caracterizacion (reference) ──
+!Pruebas/src/caracterizacion_sensor_fuerza.py
+
+# ── Whitelist: levitador C++ (reference) ──
+!levitador valentin/
+!levitador valentin/*.cpp
+!levitador valentin/*.h
+!levitador valentin/Makefile
+
+# ── Whitelist: levitador Python GUI ──
+!levitador-python/
+!levitador-python/*.py
+!levitador-python/pinn/
+!levitador-python/pinn/*.py
+
+# ── Always ignore these even if whitelisted ──
+__pycache__/
+*.py[cod]
+*.pyo
+.DS_Store
+Thumbs.db
