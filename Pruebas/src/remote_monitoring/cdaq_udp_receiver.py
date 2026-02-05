@@ -93,7 +93,7 @@ class TimeSynchronizer:
 
 
 # ═══════════════════════════════════════════════════════════════
-# CSV Logger
+# CSV Logger  (datos crudos muestra-a-muestra)
 # ═══════════════════════════════════════════════════════════════
 class CSVLogger:
     """Escribe datos recibidos a CSV de forma eficiente (flush periódico)."""
@@ -134,6 +134,64 @@ class CSVLogger:
         if self._file:
             self._file.close()
             log.info("CSV cerrado: %d filas → %s", self.rows, self.path)
+            self._file = None
+            self._writer = None
+
+    @property
+    def is_open(self):
+        return self._file is not None
+
+
+# ═══════════════════════════════════════════════════════════════
+# Inference CSV Logger  (un renglón por bloque con resultados)
+# ═══════════════════════════════════════════════════════════════
+class InferenceCSVLogger:
+    """Escribe un CSV con una fila por bloque UDP: metadatos + inferencia.
+    Permite que cualquier persona reproduzca y valide el experimento."""
+
+    def __init__(self, path: str, result_names: list = None):
+        self.path = path
+        self._file = None
+        self._writer = None
+        self.rows = 0
+        self._result_names = result_names or []
+
+    def open(self):
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        self._file = open(self.path, "w", newline="", encoding="utf-8",
+                          buffering=1)
+        self._writer = csv.writer(self._file)
+        header = [
+            "seq", "t_sender_s", "t_local_s", "fs_hz", "n_samples",
+            "infer_us",
+        ] + list(self._result_names)
+        self._writer.writerow(header)
+        self.rows = 0
+        log.info("Inference CSV abierto: %s  (%d columnas de inferencia)",
+                 self.path, len(self._result_names))
+
+    def write_row(self, seq, t_sender, t_local, fs_hz, n_samples,
+                  infer_us, result):
+        if self._writer is None:
+            return
+        row = [
+            seq, f"{t_sender:.9f}", f"{t_local:.9f}",
+            f"{fs_hz:.1f}", n_samples, f"{infer_us:.1f}",
+        ]
+        if result is not None:
+            row.extend(f"{v:.7f}" for v in result)
+        self._writer.writerow(row)
+        self.rows += 1
+
+    def flush(self):
+        if self._file:
+            self._file.flush()
+
+    def close(self):
+        if self._file:
+            self._file.close()
+            log.info("Inference CSV cerrado: %d filas → %s",
+                     self.rows, self.path)
             self._file = None
             self._writer = None
 
@@ -201,7 +259,8 @@ class ReceiverDaemon:
     def __init__(self, sender_ip: str, csv_path: str,
                  enable_csv: bool = True,
                  enable_infer: bool = True,
-                 engine: Optional[InferenceEngine] = None):
+                 engine: Optional[InferenceEngine] = None,
+                 infer_csv_path: str = None):
         self.sender_ip = sender_ip
         self.enable_csv = enable_csv
         self.enable_infer = enable_infer
@@ -223,6 +282,13 @@ class ReceiverDaemon:
         # CSV
         self.csv_logger = CSVLogger(csv_path) if enable_csv else None
 
+        # Inference CSV (resultados por bloque)
+        result_names = getattr(self.engine, 'RESULT_NAMES', [])
+        self.infer_csv = (
+            InferenceCSVLogger(infer_csv_path, result_names)
+            if infer_csv_path and enable_infer else None
+        )
+
         # Sync
         self.sync = TimeSynchronizer()
 
@@ -238,6 +304,8 @@ class ReceiverDaemon:
         self.running = True
         if self.csv_logger:
             self.csv_logger.open()
+        if self.infer_csv:
+            self.infer_csv.open()
 
         log.info("Escuchando datos en :%d  |  Inferencia → %s:%d",
                  DATA_PORT, self.sender_ip, INFER_PORT)
@@ -280,6 +348,11 @@ class ReceiverDaemon:
                         self.infer_sock.sendto(pkt, (addr[0], INFER_PORT))
                     except Exception as e:
                         log.warning("Error enviando inferencia: %s", e)
+                # Guardar en inference CSV
+                if self.infer_csv:
+                    self.infer_csv.write_row(
+                        seq, t_s, t_local, fs_hz, n_samp,
+                        dt_infer * 1e6, result)
                 self.stats["infer_calls"] += 1
                 # Media móvil exponencial del tiempo de inferencia
                 alpha = 0.05
@@ -292,6 +365,8 @@ class ReceiverDaemon:
             if now - last_flush > flush_interval:
                 if self.csv_logger:
                     self.csv_logger.flush()
+                if self.infer_csv:
+                    self.infer_csv.flush()
                 last_flush = now
             if now - last_print > 2.0:
                 self._print_stats()
@@ -300,6 +375,8 @@ class ReceiverDaemon:
         # Cleanup
         if self.csv_logger:
             self.csv_logger.close()
+        if self.infer_csv:
+            self.infer_csv.close()
         self.data_sock.close()
         self.infer_sock.close()
         log.info("Daemon detenido.")
@@ -320,6 +397,8 @@ class ReceiverDaemon:
             parts.append(f"err={s['errors']}")
         if self.csv_logger and self.csv_logger.is_open:
             parts.append(f"csv={self.csv_logger.rows}")
+        if self.infer_csv and self.infer_csv.is_open:
+            parts.append(f"icsv={self.infer_csv.rows}")
         if self.enable_infer and s["infer_calls"] > 0:
             parts.append(f"infer={s['infer_calls']}"
                          f"({s['infer_us_avg']:.0f}us)")
@@ -417,8 +496,10 @@ def main():
     ap.add_argument("--no-infer", action="store_true",
                     help="Desactivar inferencia (solo recibir y guardar)")
     ap.add_argument("--engine", default="basic",
-                    choices=["basic", "envelope"],
-                    help="Motor de inferencia: basic (stats) o envelope (Hilbert+FFT+THD)")
+                    choices=["basic", "envelope", "bouc-wen"],
+                    help="Motor de inferencia: basic | envelope | bouc-wen")
+    ap.add_argument("--infer-csv", default="auto",
+                    help="Ruta CSV de inferencia ('auto'=junto al raw, 'none'=desactivar)")
     ap.add_argument("--auto-start", action="store_true",
                     help="Enviar START al sender al iniciar")
     ap.add_argument("--sync", action="store_true",
@@ -430,16 +511,32 @@ def main():
     # Seleccionar motor de inferencia
     engine = None
     if not args.no_infer:
-        if args.engine == "envelope":
+        if args.engine == "bouc-wen":
+            try:
+                from cdaq_inference_engine import BoucWenInferenceEngine
+                engine = BoucWenInferenceEngine(fs=2500.0)
+                log.info("Motor: BoucWenInferenceEngine (KAN-PINN + Hilbert + FFT)")
+            except ImportError as e:
+                log.warning("No se pudo cargar BoucWenInferenceEngine: %s", e)
+                log.warning("Usando motor básico (stats)")
+        elif args.engine == "envelope":
             try:
                 from cdaq_inference_engine import EnvelopeInferenceEngine
                 engine = EnvelopeInferenceEngine(fs=2500.0)
-                log.info("Motor de inferencia: EnvelopeInferenceEngine (Hilbert+FFT+THD)")
+                log.info("Motor: EnvelopeInferenceEngine (Hilbert+FFT+THD)")
             except ImportError as e:
                 log.warning("No se pudo cargar EnvelopeInferenceEngine: %s", e)
                 log.warning("Usando motor básico (stats)")
         else:
             log.info("Motor de inferencia: básico (mean/std/rms)")
+
+    # Ruta del CSV de inferencia
+    infer_csv_path = None
+    if not args.no_infer and args.infer_csv != "none":
+        if args.infer_csv == "auto":
+            infer_csv_path = csv_path.replace(".csv", "_inference.csv")
+        else:
+            infer_csv_path = args.infer_csv
 
     daemon = ReceiverDaemon(
         sender_ip=args.sender_ip,
@@ -447,6 +544,7 @@ def main():
         enable_csv=not args.no_csv,
         enable_infer=not args.no_infer,
         engine=engine,
+        infer_csv_path=infer_csv_path,
     )
 
     # Ctrl+C graceful

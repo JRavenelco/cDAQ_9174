@@ -768,7 +768,17 @@ if HAS_GUI:
                     and self.infer_thread.last_values is not None):
                 v = self.infer_thread.last_values
                 seq = self.infer_thread.last_seq
-                if len(v) >= 12:
+                if len(v) >= 23:
+                    # Bouc-Wen engine (Nivel 2)
+                    cut = "🔴 CORTE" if v[7] > 0.5 else "⚪ reposo"
+                    txt = (f"Seq:{seq}  {cut}  "
+                           f"F_bw={v[12]:.4f}V  "
+                           f"z={v[15]:.4f}  "
+                           f"R²={v[18]:.3f}  "
+                           f"Hyst={v[20]:.1f}%  "
+                           f"f₀={v[3]:.1f}Hz  "
+                           f"α={v[17]:.3f}")
+                elif len(v) >= 12:
                     # Envelope engine (Nivel 1)
                     cut = "🔴 CORTE" if v[7] > 0.5 else "⚪ reposo"
                     txt = (f"Seq:{seq}  {cut}  "
