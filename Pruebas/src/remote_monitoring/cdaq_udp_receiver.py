@@ -105,7 +105,9 @@ class CuttingConditions:
     Modelo:  F_t = K_tc · a_p · f_z · sin(φ) + K_te · a_p
     Media (slotting):  F̄_t = N_f · K_tc · a_p · f_z / π
 
-    Valores por defecto para Al 6061-T6 con cortador de 2 filos.
+    Herramienta default: Korloy AMSA3100HS (fresa escuadrar)
+      D=25.4mm (1"), Z=2 insertos, κ=90° → sin(κ)=1
+    Material default: Al 6061-T6  (Ktc≈800 N/mm²)
     """
     cut_id: int = 0                # Identificador de condición (se incrementa)
     label: str = "idle"            # Etiqueta libre ("corte1", "prof_0.5mm", etc.)
@@ -113,9 +115,9 @@ class CuttingConditions:
     rpm_spindle: float = 0.0      # RPM del husillo
     rpm_feed: float = 0.0         # RPM del eje de avance X
     feed_mmrev: float = 0.0       # Avance por revolución (mm/rev) – si se conoce
-    tool_diam_mm: float = 6.0     # Diámetro del cortador (mm)
-    n_flutes: int = 2             # Número de filos
-    Ktc: float = 1000.0           # Coef. tangencial específico (N/mm²) – Al 6061
+    tool_diam_mm: float = 25.4    # Korloy AMSA3100HS: 1" = 25.4 mm
+    n_flutes: int = 2             # 2 insertos
+    Ktc: float = 800.0            # Al 6061-T6 (N/mm²)
     Kte: float = 10.0             # Coef. de filo (N/mm)
 
     @property
@@ -678,12 +680,12 @@ def main():
                      help="RPM del husillo")
     cut.add_argument("--feed-rpm", type=float, default=0.0,
                      help="RPM del eje de avance X")
-    cut.add_argument("--tool-diam", type=float, default=6.0,
-                     help="Diámetro del cortador (mm)")
+    cut.add_argument("--tool-diam", type=float, default=25.4,
+                     help="Diámetro del cortador (mm) [Korloy AMSA3100HS=25.4]")
     cut.add_argument("--n-flutes", type=int, default=2,
                      help="Número de filos del cortador")
-    cut.add_argument("--Ktc", type=float, default=1000.0,
-                     help="Coef. tangencial específico (N/mm²) – Al 6061")
+    cut.add_argument("--Ktc", type=float, default=800.0,
+                     help="Coef. tangencial específico (N/mm²) [Al6061≈800, Acero≈2000]")
     cut.add_argument("--Kte", type=float, default=10.0,
                      help="Coef. de filo (N/mm)")
     cut.add_argument("--cut-label", default="idle",
