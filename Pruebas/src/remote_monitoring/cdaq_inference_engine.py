@@ -24,9 +24,31 @@ Parámetros identificados offline en:
     Pruebas/src/caracterizacion_fuerza/README.md
 """
 
+import sys
+import site
+import os
+
+_user_base = None
+try:
+    _user_base = site.getuserbase()
+except Exception:
+    _user_base = getattr(site, "USER_BASE", None)
+
+if _user_base:
+    _user_base_n = os.path.normpath(_user_base)
+    sys.path = [p for p in sys.path if not (p and os.path.normpath(p).startswith(_user_base_n))]
+
 import numpy as np
-from scipy.signal import hilbert, butter, sosfilt
-from scipy.integrate import cumulative_trapezoid
+try:
+    from scipy.signal import hilbert, butter, sosfilt
+    from scipy.integrate import cumulative_trapezoid
+    _HAVE_SCIPY = True
+except Exception:
+    hilbert = None
+    butter = None
+    sosfilt = None
+    cumulative_trapezoid = None
+    _HAVE_SCIPY = False
 
 # Importar clase base del receiver
 import os, sys
@@ -106,14 +128,18 @@ class EnvelopeInferenceEngine(InferenceEngine):
         self._buf_len = int(fs * 0.5)   # 0.5 s de contexto
         self._accel_buf = np.zeros(0, dtype=np.float32)
         self._force_buf = np.zeros(0, dtype=np.float32)
-        self._env_sos = butter(4, envelope_fc / (fs / 2),
-                               btype='low', output='sos')
+        if _HAVE_SCIPY:
+            self._env_sos = butter(4, envelope_fc / (fs / 2),
+                                   btype='low', output='sos')
+        else:
+            self._env_sos = None
 
     def _update_fs(self, fs):
         if abs(fs - self.fs) > 1.0:
             self.fs = fs
-            self._env_sos = butter(4, self.envelope_fc / (fs / 2),
-                                   btype='low', output='sos')
+            if _HAVE_SCIPY:
+                self._env_sos = butter(4, self.envelope_fc / (fs / 2),
+                                       btype='low', output='sos')
             self._buf_len = int(fs * 0.5)
 
     def _accumulate(self, force, accel):
@@ -126,12 +152,15 @@ class EnvelopeInferenceEngine(InferenceEngine):
         """Retorna (env_filtered, envelope_rms) sobre el buffer completo."""
         a_buf = self._accel_buf
         n = len(a_buf)
-        analytic = hilbert(a_buf)
-        env_raw = np.abs(analytic).astype(np.float32)
-        if n > 30:
-            env = sosfilt(self._env_sos, env_raw).astype(np.float32)
+        if _HAVE_SCIPY:
+            analytic = hilbert(a_buf)
+            env_raw = np.abs(analytic).astype(np.float32)
+            if n > 30:
+                env = sosfilt(self._env_sos, env_raw).astype(np.float32)
+            else:
+                env = env_raw
         else:
-            env = env_raw
+            env = np.abs(a_buf).astype(np.float32)
         envelope_rms = float(np.sqrt(np.mean(env ** 2)))
         return env, envelope_rms
 
@@ -254,18 +283,48 @@ class BoucWenInferenceEngine(EnvelopeInferenceEngine):
         self._z = 0.0
 
         # Filtro pasa-altos para integración (SOS)
-        self._drift_sos = butter(2, self.DRIFT_FC / (fs / 2),
-                                 btype='high', output='sos')
+        if _HAVE_SCIPY:
+            self._drift_sos = butter(2, self.DRIFT_FC / (fs / 2),
+                                     btype='high', output='sos')
+        else:
+            self._drift_sos = None
 
         # Buffer de envolvente anterior (para área del lazo)
         self._prev_env = None
         self._prev_force = None
 
+        self._cpp = None
+        try:
+            import boucwen_cpp  # type: ignore
+            self._cpp = boucwen_cpp.BoucWenProcessor(
+                fs=float(fs),
+                mass=float(mass if mass is not None else self.MASS),
+                stiffness=float(stiffness if stiffness is not None else self.STIFFNESS),
+                damping=float(damping if damping is not None else self.DAMPING),
+                alpha=float(alpha if alpha is not None else self.ALPHA),
+                a_bw=float(self.A_BW),
+                b_bw=float(self.B_BW),
+                c_bw=float(self.C_BW),
+                n_bw=float(self.N_BW),
+                k_env=float(self.K_ENV),
+                b_env=float(self.B_ENV),
+                cutting_threshold_g=float(self.CUTTING_THRESHOLD_G),
+            )
+        except Exception:
+            self._cpp = None
+
+        self._v_state = 0.0
+        self._x_state = 0.0
+        self._prev_accel = 0.0
+
     def _update_fs(self, fs):
         super()._update_fs(fs)
         if abs(fs - self.fs) > 1.0:
-            self._drift_sos = butter(2, self.DRIFT_FC / (fs / 2),
-                                     btype='high', output='sos')
+            if _HAVE_SCIPY:
+                self._drift_sos = butter(2, self.DRIFT_FC / (fs / 2),
+                                         btype='high', output='sos')
+            else:
+                self._drift_sos = None
 
     def _integrate_accel(self, accel_buf):
         """Integra aceleración → velocidad → desplazamiento con filtro anti-drift."""
@@ -274,11 +333,30 @@ class BoucWenInferenceEngine(EnvelopeInferenceEngine):
         if n < 10:
             return np.zeros(n), np.zeros(n)
 
-        # Integrar con cumtrapz + filtro pasa-altos
-        vel_raw = cumulative_trapezoid(accel_buf, dx=dt, initial=0)
-        vel = sosfilt(self._drift_sos, vel_raw).astype(np.float32)
-        disp_raw = cumulative_trapezoid(vel, dx=dt, initial=0)
-        disp = sosfilt(self._drift_sos, disp_raw).astype(np.float32)
+        if _HAVE_SCIPY:
+            vel_raw = cumulative_trapezoid(accel_buf, dx=dt, initial=0)
+            vel = sosfilt(self._drift_sos, vel_raw).astype(np.float32)
+            disp_raw = cumulative_trapezoid(vel, dx=dt, initial=0)
+            disp = sosfilt(self._drift_sos, disp_raw).astype(np.float32)
+            return vel, disp
+
+        vel = np.empty(n, dtype=np.float32)
+        disp = np.empty(n, dtype=np.float32)
+        v = float(self._v_state)
+        x = float(self._x_state)
+        a_prev = float(self._prev_accel)
+        v_prev = v
+        for i in range(n):
+            a_now = float(accel_buf[i])
+            v = v + 0.5 * (a_prev + a_now) * dt
+            x = x + 0.5 * (v_prev + v) * dt
+            vel[i] = v
+            disp[i] = x
+            v_prev = v
+            a_prev = a_now
+        self._v_state = v
+        self._x_state = x
+        self._prev_accel = a_prev
         return vel, disp
 
     def _run_bouc_wen(self, vel, env, dt):
@@ -293,12 +371,19 @@ class BoucWenInferenceEngine(EnvelopeInferenceEngine):
         n_bw = self.N_BW
 
         for i in range(n):
-            v = vel[i]
-            abs_z = abs(z) + 1e-8
-            sign_vz = 1.0 if v * z >= 0 else -1.0
-            dz = v * (A - (abs_z ** n_bw) * (B * sign_vz + C))
-            z = z + dz * dt
-            z = max(-1.0, min(1.0, z))   # clip
+            v = float(vel[i])
+
+            def f_dz(z_in: float) -> float:
+                abs_z = abs(z_in) + 1e-8
+                sign_vz = 1.0 if v * z_in >= 0 else -1.0
+                return v * (A - (abs_z ** n_bw) * (B * sign_vz + C))
+
+            k1 = f_dz(z)
+            k2 = f_dz(z + 0.5 * dt * k1)
+            k3 = f_dz(z + 0.5 * dt * k2)
+            k4 = f_dz(z + dt * k3)
+            z = z + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            z = max(-1.0, min(1.0, z))
             z_arr[i] = z
 
         self._z = z
@@ -317,6 +402,16 @@ class BoucWenInferenceEngine(EnvelopeInferenceEngine):
 
     def predict(self, force: np.ndarray, accel: np.ndarray,
                 fs: float, seq: int):
+        if self._cpp is not None:
+            out = self._cpp.process_block(
+                np.asarray(force, dtype=np.float32),
+                np.asarray(accel, dtype=np.float32),
+                float(fs),
+            )
+            if out is None:
+                return None
+            return np.asarray(out, dtype=np.float32)
+
         self._update_fs(fs)
         self._accumulate(force, accel)
 

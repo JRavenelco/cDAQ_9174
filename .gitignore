@@ -12,6 +12,7 @@
 !Pruebas/src/
 !Pruebas/src/remote_monitoring/
 !Pruebas/src/remote_monitoring/*.py
+!Pruebas/src/remote_monitoring/*.cpp
 !Pruebas/src/remote_monitoring/README.md
 
 # ── Whitelist: caracterizacion (reference) ──
