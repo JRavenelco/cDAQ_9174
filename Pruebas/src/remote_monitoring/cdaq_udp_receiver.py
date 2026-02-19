@@ -25,9 +25,15 @@ import argparse
 import csv
 import signal
 import logging
+import json
+import queue
+import urllib.request
+import urllib.error
 from collections import deque
 from datetime import datetime
 from typing import Optional, Callable
+from dataclasses import dataclass, field, asdict
+import math
 
 import numpy as np
 
@@ -48,6 +54,112 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("rx")
+
+
+class JSONLCaseStore:
+    def __init__(self, path: str):
+        self.path = path
+        self._file = None
+        self._lock = threading.Lock()
+
+    def open(self):
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        self._file = open(self.path, "a", encoding="utf-8")
+
+    def append(self, record: dict):
+        if not self._file:
+            return
+        line = json.dumps(record, ensure_ascii=False)
+        with self._lock:
+            self._file.write(line + "\n")
+            self._file.flush()
+
+    def close(self):
+        with self._lock:
+            if self._file:
+                self._file.close()
+                self._file = None
+
+
+class OllamaReasoner:
+    def __init__(self,
+                 url: str = "http://127.0.0.1:11434/api/generate",
+                 model: str = "llama3.2",
+                 timeout_s: float = 30.0):
+        self.url = url
+        self.model = model
+        self.timeout_s = float(timeout_s)
+
+    def reason(self, meta: dict, features: dict) -> dict:
+        payload = {
+            "model": self.model,
+            "stream": False,
+            "prompt": (
+                "Eres un sistema de razonamiento para monitoreo de mecanizado.\n"
+                "Devuelve SOLO un JSON válido (sin markdown) con llaves: "
+                "cutting_state, should_store_case, store_segment, anomaly, label, notes.\n"
+                "meta=" + json.dumps(meta, ensure_ascii=False) + "\n"
+                "features=" + json.dumps(features, ensure_ascii=False) + "\n"
+            ),
+        }
+        req = urllib.request.Request(
+            self.url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        outer = json.loads(raw)
+        text = (outer.get("response") or "").strip()
+        if not text:
+            return {"raw": raw}
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return {"response": text}
+
+
+class LLMCaseWorker(threading.Thread):
+    def __init__(self,
+                 reasoner: OllamaReasoner,
+                 store: JSONLCaseStore,
+                 stop_flag: threading.Event):
+        super().__init__(daemon=True)
+        self.reasoner = reasoner
+        self.store = store
+        self.stop_flag = stop_flag
+        self.q: "queue.Queue[dict]" = queue.Queue(maxsize=64)
+
+    def submit(self, task: dict):
+        try:
+            self.q.put_nowait(task)
+        except queue.Full:
+            pass
+
+    def run(self):
+        while not self.stop_flag.is_set():
+            try:
+                task = self.q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            try:
+                meta = task.get("meta", {})
+                features = task.get("features", {})
+                llm = self.reasoner.reason(meta=meta, features=features)
+                case = {
+                    "t_local_s": task.get("t_local_s"),
+                    "seq": task.get("seq"),
+                    "meta": meta,
+                    "features": features,
+                    "llm": llm,
+                }
+                self.store.append(case)
+            except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as e:
+                log.warning("LLM worker error: %s", e)
+            except Exception as e:
+                log.warning("LLM worker unknown error: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -93,38 +205,134 @@ class TimeSynchronizer:
 
 
 # ═══════════════════════════════════════════════════════════════
-# CSV Logger
+# Condiciones de corte  (modelo mecanicista Altintas & Budak)
+# ═══════════════════════════════════════════════════════════════
+
+@dataclass
+class CuttingConditions:
+    """Parámetros de corte para el modelo mecanicista de fuerzas.
+
+    Modelo:  F_t = K_tc · a_p · f_z · sin(φ) + K_te · a_p
+    Media (slotting):  F̄_t = N_f · K_tc · a_p · f_z / π
+
+    Herramienta default: Korloy AMSA3100HS (fresa escuadrar)
+      D=25.4mm (1"), Z=2 insertos, κ=90° → sin(κ)=1
+    Material default: Al 6061-T6  (Ktc≈800 N/mm²)
+    """
+
+    RESULT_NAMES = [
+        "force_mean",
+        "force_std",
+        "force_rms",
+        "accel_mean",
+        "accel_std",
+        "accel_rms",
+    ]
+    cut_id: int = 0                # Identificador de condición (se incrementa)
+    label: str = "idle"            # Etiqueta libre ("corte1", "prof_0.5mm", etc.)
+    ap_mm: float = 0.0            # Profundidad axial de corte (mm)
+    rpm_spindle: float = 0.0      # RPM del husillo
+    rpm_feed: float = 0.0         # RPM del eje de avance X
+    feed_mmrev: float = 0.0       # Avance por revolución (mm/rev) – si se conoce
+    tool_diam_mm: float = 25.4    # Korloy AMSA3100HS: 1" = 25.4 mm
+    n_flutes: int = 2             # 2 insertos
+    Ktc: float = 800.0            # Al 6061-T6 (N/mm²)
+    Kte: float = 10.0             # Coef. de filo (N/mm)
+
+    @property
+    def fz_mm(self) -> float:
+        """Avance por diente (mm/diente)."""
+        if self.feed_mmrev > 0:
+            return self.feed_mmrev / self.n_flutes
+        if self.rpm_spindle > 0 and self.rpm_feed > 0:
+            # Estimar: avance lineal ≈ rpm_feed * paso_tornillo
+            # Asumimos tornillo de paso 2mm (típico mesa CNC hobby)
+            feed_mm_min = self.rpm_feed * 2.0
+            return feed_mm_min / (self.n_flutes * self.rpm_spindle)
+        return 0.0
+
+    @property
+    def Ft_mean_N(self) -> float:
+        """Fuerza tangencial media teórica (N) para slotting completo."""
+        fz = self.fz_mm
+        if fz <= 0 or self.ap_mm <= 0:
+            return 0.0
+        return (self.n_flutes * self.Ktc * self.ap_mm * fz) / math.pi
+
+    @property
+    def Ft_peak_N(self) -> float:
+        """Fuerza tangencial pico teórica (N) – sin(φ)=1."""
+        fz = self.fz_mm
+        if fz <= 0 or self.ap_mm <= 0:
+            return 0.0
+        return self.Ktc * self.ap_mm * fz + self.Kte * self.ap_mm
+
+    def header_lines(self) -> list:
+        """Líneas de metadatos para escribir al inicio del CSV."""
+        fz = self.fz_mm
+        return [
+            f"# cut_id={self.cut_id}  label={self.label}",
+            f"# ap_mm={self.ap_mm}  rpm_spindle={self.rpm_spindle}"
+            f"  rpm_feed={self.rpm_feed}  feed_mmrev={self.feed_mmrev}",
+            f"# tool_diam_mm={self.tool_diam_mm}  n_flutes={self.n_flutes}",
+            f"# Ktc={self.Ktc} N/mm²  Kte={self.Kte} N/mm",
+            f"# fz={fz:.4f} mm/diente  Ft_mean={self.Ft_mean_N:.2f} N"
+            f"  Ft_peak={self.Ft_peak_N:.2f} N",
+        ]
+
+    def summary(self) -> str:
+        fz = self.fz_mm
+        return (f"[CUT {self.cut_id}] {self.label}: "
+                f"ap={self.ap_mm}mm  RPM={self.rpm_spindle}  "
+                f"feed_RPM={self.rpm_feed}  fz={fz:.4f}mm  "
+                f"Ft_mean={self.Ft_mean_N:.1f}N  Ft_peak={self.Ft_peak_N:.1f}N")
+
+
+# ═══════════════════════════════════════════════════════════════
+# CSV Logger  (datos crudos muestra-a-muestra)
 # ═══════════════════════════════════════════════════════════════
 class CSVLogger:
     """Escribe datos recibidos a CSV de forma eficiente (flush periódico)."""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, cutting: CuttingConditions = None):
         self.path = path
         self._file = None
         self._writer = None
         self.rows = 0
+        self.cutting = cutting or CuttingConditions()
 
     def open(self):
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         self._file = open(self.path, "w", newline="", encoding="utf-8",
                           buffering=1)   # line-buffered
+        # Metadatos de condiciones de corte
+        for line in self.cutting.header_lines():
+            self._file.write(line + "\n")
         self._writer = csv.writer(self._file)
         self._writer.writerow([
-            "seq", "t_sender_s", "t_local_s", "sample_idx",
+            "cut_id", "seq", "t_sender_s", "t_local_s", "sample_idx",
             "force_v", "accel_g",
         ])
         self.rows = 0
         log.info("CSV abierto: %s", self.path)
 
-    def write_block(self, seq, t_sender, t_local, force, accel):
+    def write_block(self, seq, t_sender, t_local, force, accel, cut_id=0):
         if self._writer is None:
             return
         for i in range(len(force)):
             self._writer.writerow([
+                cut_id,
                 seq, f"{t_sender:.9f}", f"{t_local:.9f}", i,
                 f"{force[i]:.7f}", f"{accel[i]:.7f}",
             ])
         self.rows += len(force)
+
+    def write_cut_change(self, cutting: CuttingConditions):
+        """Escribe un marcador de cambio de condición en el CSV."""
+        self.cutting = cutting
+        if self._file:
+            for line in cutting.header_lines():
+                self._file.write(line + "\n")
 
     def flush(self):
         if self._file:
@@ -134,6 +342,78 @@ class CSVLogger:
         if self._file:
             self._file.close()
             log.info("CSV cerrado: %d filas → %s", self.rows, self.path)
+            self._file = None
+            self._writer = None
+
+    @property
+    def is_open(self):
+        return self._file is not None
+
+
+# ═══════════════════════════════════════════════════════════════
+# Inference CSV Logger  (un renglón por bloque con resultados)
+# ═══════════════════════════════════════════════════════════════
+class InferenceCSVLogger:
+    """Escribe un CSV con una fila por bloque UDP: metadatos + inferencia.
+    Permite que cualquier persona reproduzca y valide el experimento."""
+
+    def __init__(self, path: str, result_names: list = None,
+                 cutting: CuttingConditions = None):
+        self.path = path
+        self._file = None
+        self._writer = None
+        self.rows = 0
+        self._result_names = result_names or []
+        self.cutting = cutting or CuttingConditions()
+
+    def open(self):
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        self._file = open(self.path, "w", newline="", encoding="utf-8",
+                          buffering=1)
+        # Metadatos de condiciones de corte
+        for line in self.cutting.header_lines():
+            self._file.write(line + "\n")
+        self._writer = csv.writer(self._file)
+        header = [
+            "cut_id", "seq", "t_sender_s", "t_local_s", "fs_hz", "n_samples",
+            "infer_us", "Ft_mean_N", "Ft_peak_N",
+        ] + list(self._result_names)
+        self._writer.writerow(header)
+        self.rows = 0
+        log.info("Inference CSV abierto: %s  (%d columnas de inferencia)",
+                 self.path, len(self._result_names))
+
+    def write_row(self, seq, t_sender, t_local, fs_hz, n_samples,
+                  infer_us, result, cut_id=0, Ft_mean=0.0, Ft_peak=0.0):
+        if self._writer is None:
+            return
+        row = [
+            cut_id,
+            seq, f"{t_sender:.9f}", f"{t_local:.9f}",
+            f"{fs_hz:.1f}", n_samples, f"{infer_us:.1f}",
+            f"{Ft_mean:.4f}", f"{Ft_peak:.4f}",
+        ]
+        if result is not None:
+            row.extend(f"{v:.7f}" for v in result)
+        self._writer.writerow(row)
+        self.rows += 1
+
+    def write_cut_change(self, cutting: CuttingConditions):
+        """Escribe un marcador de cambio de condición en el CSV."""
+        self.cutting = cutting
+        if self._file:
+            for line in cutting.header_lines():
+                self._file.write(line + "\n")
+
+    def flush(self):
+        if self._file:
+            self._file.flush()
+
+    def close(self):
+        if self._file:
+            self._file.close()
+            log.info("Inference CSV cerrado: %d filas → %s",
+                     self.rows, self.path)
             self._file = None
             self._writer = None
 
@@ -201,11 +481,20 @@ class ReceiverDaemon:
     def __init__(self, sender_ip: str, csv_path: str,
                  enable_csv: bool = True,
                  enable_infer: bool = True,
-                 engine: Optional[InferenceEngine] = None):
+                 engine: Optional[InferenceEngine] = None,
+                 infer_csv_path: str = None,
+                 cutting: CuttingConditions = None,
+                 llm_enable: bool = False,
+                 llm_every_s: float = 1.0,
+                 llm_timeout_s: float = 30.0,
+                 llm_model: str = "llama3.2",
+                 llm_url: str = "http://127.0.0.1:11434/api/generate",
+                 case_store_path: str = None):
         self.sender_ip = sender_ip
         self.enable_csv = enable_csv
         self.enable_infer = enable_infer
         self.engine = engine or InferenceEngine()
+        self.cutting = cutting or CuttingConditions()
 
         # Sockets
         self.data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -221,10 +510,44 @@ class ReceiverDaemon:
         self.infer_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         # CSV
-        self.csv_logger = CSVLogger(csv_path) if enable_csv else None
+        self.csv_logger = (
+            CSVLogger(csv_path, self.cutting) if enable_csv else None
+        )
+
+        # Inference CSV (resultados por bloque)
+        result_names = getattr(self.engine, 'RESULT_NAMES', [])
+        self.infer_csv = (
+            InferenceCSVLogger(infer_csv_path, result_names, self.cutting)
+            if infer_csv_path and enable_infer else None
+        )
 
         # Sync
         self.sync = TimeSynchronizer()
+
+        self._llm_enable = bool(llm_enable)
+        self._llm_every_s = float(llm_every_s) if llm_every_s is not None else 1.0
+        self._llm_last_t = 0.0
+        self._llm_stop = threading.Event()
+        self._llm_worker: Optional[LLMCaseWorker] = None
+        self._case_store: Optional[JSONLCaseStore] = None
+        if self._llm_enable and case_store_path:
+            try:
+                self._case_store = JSONLCaseStore(case_store_path)
+                self._case_store.open()
+                reasoner = OllamaReasoner(url=llm_url, model=llm_model, timeout_s=llm_timeout_s)
+                self._llm_worker = LLMCaseWorker(reasoner, self._case_store, self._llm_stop)
+                self._llm_worker.start()
+                log.info("LLM habilitado: model=%s  cases=%s", llm_model, case_store_path)
+            except Exception as e:
+                log.warning("No se pudo iniciar LLM worker: %s", e)
+                self._llm_enable = False
+                self._llm_worker = None
+                if self._case_store:
+                    try:
+                        self._case_store.close()
+                    except Exception:
+                        pass
+                    self._case_store = None
 
         # State
         self.running = False
@@ -238,6 +561,8 @@ class ReceiverDaemon:
         self.running = True
         if self.csv_logger:
             self.csv_logger.open()
+        if self.infer_csv:
+            self.infer_csv.open()
 
         log.info("Escuchando datos en :%d  |  Inferencia → %s:%d",
                  DATA_PORT, self.sender_ip, INFER_PORT)
@@ -269,7 +594,9 @@ class ReceiverDaemon:
 
             # CSV logging
             if self.csv_logger:
-                self.csv_logger.write_block(seq, t_s, t_local, force, accel)
+                self.csv_logger.write_block(
+                    seq, t_s, t_local, force, accel,
+                    cut_id=self.cutting.cut_id)
 
             # Inferencia → devolver resultado a Windows
             if self.enable_infer:
@@ -280,6 +607,14 @@ class ReceiverDaemon:
                         self.infer_sock.sendto(pkt, (addr[0], INFER_PORT))
                     except Exception as e:
                         log.warning("Error enviando inferencia: %s", e)
+                # Guardar en inference CSV
+                if self.infer_csv:
+                    self.infer_csv.write_row(
+                        seq, t_s, t_local, fs_hz, n_samp,
+                        dt_infer * 1e6, result,
+                        cut_id=self.cutting.cut_id,
+                        Ft_mean=self.cutting.Ft_mean_N,
+                        Ft_peak=self.cutting.Ft_peak_N)
                 self.stats["infer_calls"] += 1
                 # Media móvil exponencial del tiempo de inferencia
                 alpha = 0.05
@@ -287,11 +622,48 @@ class ReceiverDaemon:
                 self.stats["infer_us_avg"] = (
                     prev * (1 - alpha) + dt_infer * 1e6 * alpha)
 
+                if self._llm_worker and result is not None:
+                    now_s = time.time()
+                    if (now_s - self._llm_last_t) >= max(0.1, self._llm_every_s):
+                        names = getattr(self.engine, "RESULT_NAMES", []) or []
+                        feats = {}
+                        arr = np.asarray(result).ravel()
+                        if names and len(names) == len(arr):
+                            for k, v in zip(names, arr):
+                                feats[str(k)] = float(v)
+                        else:
+                            feats["result"] = [float(v) for v in arr]
+
+                        meta_llm = {
+                            "cut_id": int(self.cutting.cut_id),
+                            "cut_label": str(self.cutting.label),
+                            "ap_mm": float(self.cutting.ap_mm),
+                            "rpm_spindle": float(self.cutting.rpm_spindle),
+                            "rpm_feed": float(self.cutting.rpm_feed),
+                            "tool_diam_mm": float(self.cutting.tool_diam_mm),
+                            "n_flutes": int(self.cutting.n_flutes),
+                            "Ktc": float(self.cutting.Ktc),
+                            "Kte": float(self.cutting.Kte),
+                            "fz_mm": float(self.cutting.fz_mm),
+                            "Ft_mean_N": float(self.cutting.Ft_mean_N),
+                            "Ft_peak_N": float(self.cutting.Ft_peak_N),
+                        }
+
+                        self._llm_worker.submit({
+                            "t_local_s": float(t_local),
+                            "seq": int(seq),
+                            "meta": meta_llm,
+                            "features": feats,
+                        })
+                        self._llm_last_t = now_s
+
             # Flush / print periódico
             now = time.time()
             if now - last_flush > flush_interval:
                 if self.csv_logger:
                     self.csv_logger.flush()
+                if self.infer_csv:
+                    self.infer_csv.flush()
                 last_flush = now
             if now - last_print > 2.0:
                 self._print_stats()
@@ -300,6 +672,19 @@ class ReceiverDaemon:
         # Cleanup
         if self.csv_logger:
             self.csv_logger.close()
+        if self.infer_csv:
+            self.infer_csv.close()
+        if self._llm_worker:
+            self._llm_stop.set()
+            try:
+                self._llm_worker.join(timeout=1.0)
+            except Exception:
+                pass
+        if self._case_store:
+            try:
+                self._case_store.close()
+            except Exception:
+                pass
         self.data_sock.close()
         self.infer_sock.close()
         log.info("Daemon detenido.")
@@ -320,15 +705,33 @@ class ReceiverDaemon:
             parts.append(f"err={s['errors']}")
         if self.csv_logger and self.csv_logger.is_open:
             parts.append(f"csv={self.csv_logger.rows}")
+        if self.infer_csv and self.infer_csv.is_open:
+            parts.append(f"icsv={self.infer_csv.rows}")
         if self.enable_infer and s["infer_calls"] > 0:
             parts.append(f"infer={s['infer_calls']}"
                          f"({s['infer_us_avg']:.0f}us)")
         if self.sync.n_samples > 0:
             parts.append(f"offset={self.sync.offset*1000:.2f}ms")
+        if self.cutting.cut_id > 0:
+            parts.append(f"cut={self.cutting.cut_id}:{self.cutting.label}")
         log.info("  ".join(parts))
 
     def stop(self):
         self.running = False
+        self._llm_stop.set()
+
+    def set_cutting(self, **kwargs):
+        """Cambia condiciones de corte en vivo. Incrementa cut_id automáticamente."""
+        self.cutting.cut_id += 1
+        for k, v in kwargs.items():
+            if hasattr(self.cutting, k):
+                setattr(self.cutting, k, v)
+        # Notificar a los CSV loggers
+        if self.csv_logger:
+            self.csv_logger.write_cut_change(self.cutting)
+        if self.infer_csv:
+            self.infer_csv.write_cut_change(self.cutting)
+        log.info(self.cutting.summary())
 
     # ── Comandos de control ───────────────────────────────────
     def do_sync(self):
@@ -364,35 +767,76 @@ class CLIThread(threading.Thread):
         super().__init__(daemon=True)
         self.d = daemon
 
+    def _parse_cut_cmd(self, args_str: str):
+        """Parsea 'cut label ap rpm feed' o 'cut key=val key=val ...'."""
+        parts = args_str.split()
+        kwargs = {}
+        positional = []
+        for p in parts:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                try:
+                    v = float(v)
+                except ValueError:
+                    pass
+                kwargs[k] = v
+            else:
+                positional.append(p)
+        # Positional: label ap_mm rpm_spindle rpm_feed
+        if len(positional) >= 1:
+            kwargs.setdefault("label", positional[0])
+        if len(positional) >= 2:
+            kwargs.setdefault("ap_mm", float(positional[1]))
+        if len(positional) >= 3:
+            kwargs.setdefault("rpm_spindle", float(positional[2]))
+        if len(positional) >= 4:
+            kwargs.setdefault("rpm_feed", float(positional[3]))
+        return kwargs
+
     def run(self):
-        print("\n─── Comandos: start | stop | sync | stats | quit ───\n")
+        print("\n─── Comandos: start | stop | sync | stats | cut | quit ───\n")
         while self.d.running:
             try:
-                cmd = input("> ").strip().lower()
+                cmd = input("> ").strip()
             except (EOFError, KeyboardInterrupt):
                 self.d.stop()
                 break
-            if cmd == "start":
+            cmd_lower = cmd.lower()
+            if cmd_lower == "start":
                 self.d.send_start()
-            elif cmd == "stop":
+            elif cmd_lower == "stop":
                 self.d.send_stop()
-            elif cmd == "sync":
+            elif cmd_lower == "sync":
                 self.d.do_sync()
-            elif cmd == "stats":
+            elif cmd_lower == "stats":
                 self.d._print_stats()
-            elif cmd in ("quit", "exit", "q"):
+            elif cmd_lower.startswith("cut"):
+                rest = cmd[3:].strip()
+                if not rest:
+                    print(self.d.cutting.summary())
+                    print("  Uso: cut <label> <ap_mm> <rpm_spindle> <rpm_feed>")
+                    print("    o: cut label=corte1 ap_mm=0.5 rpm_spindle=300 rpm_feed=20")
+                    print("  Ejemplo: cut prof_0.5mm 0.5 300 20")
+                else:
+                    kwargs = self._parse_cut_cmd(rest)
+                    self.d.set_cutting(**kwargs)
+            elif cmd_lower in ("quit", "exit", "q"):
                 self.d.send_stop()
                 time.sleep(0.3)
                 self.d.stop()
                 break
-            elif cmd == "help":
+            elif cmd_lower == "help":
                 print("  start  – enviar START al sender Windows")
                 print("  stop   – enviar STOP al sender Windows")
                 print("  sync   – sincronizar relojes NTP-like")
                 print("  stats  – mostrar estadísticas")
+                print("  cut    – ver/cambiar condiciones de corte")
+                print("           cut <label> <ap_mm> <rpm> <feed_rpm>")
+                print("           cut ap_mm=1.0 rpm_spindle=300")
                 print("  quit   – salir")
             elif cmd:
                 print(f"  Comando desconocido: '{cmd}'  (escribe 'help')")
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -416,19 +860,115 @@ def main():
                     help="Desactivar logging CSV")
     ap.add_argument("--no-infer", action="store_true",
                     help="Desactivar inferencia (solo recibir y guardar)")
+    ap.add_argument("--engine", default="basic",
+                    choices=["basic", "envelope", "bouc-wen"],
+                    help="Motor de inferencia: basic | envelope | bouc-wen")
+    ap.add_argument("--infer-csv", default="auto",
+                    help="Ruta CSV de inferencia ('auto'=junto al raw, 'none'=desactivar)")
+    ap.add_argument("--llm", action="store_true",
+                    help="Habilitar razonador LLM (Ollama) para generar casos JSONL")
+    ap.add_argument("--llm-model", default="llama3.2",
+                    help="Modelo de Ollama (ej: llama3.2)")
+    ap.add_argument("--llm-url", default="http://127.0.0.1:11434/api/generate",
+                    help="Endpoint Ollama /api/generate")
+    ap.add_argument("--llm-every-s", type=float, default=1.0,
+                    help="Periodo en segundos entre consultas al LLM")
+    ap.add_argument("--llm-timeout-s", type=float, default=30.0,
+                    help="Timeout en segundos para la consulta a Ollama")
+    ap.add_argument("--cases", default="auto",
+                    help="Ruta para guardar casos JSONL ('auto'=junto al raw, 'none'=desactivar)")
     ap.add_argument("--auto-start", action="store_true",
                     help="Enviar START al sender al iniciar")
     ap.add_argument("--sync", action="store_true",
                     help="Hacer sync de reloj al iniciar")
+    # ── Condiciones de corte (modelo mecanicista) ──
+    cut = ap.add_argument_group("Condiciones de corte")
+    cut.add_argument("--ap", type=float, default=0.0,
+                     help="Profundidad axial de corte (mm)")
+    cut.add_argument("--rpm", type=float, default=0.0,
+                     help="RPM del husillo")
+    cut.add_argument("--feed-rpm", type=float, default=0.0,
+                     help="RPM del eje de avance X")
+    cut.add_argument("--tool-diam", type=float, default=25.4,
+                     help="Diámetro del cortador (mm) [Korloy AMSA3100HS=25.4]")
+    cut.add_argument("--n-flutes", type=int, default=2,
+                     help="Número de filos del cortador")
+    cut.add_argument("--Ktc", type=float, default=800.0,
+                     help="Coef. tangencial específico (N/mm²) [Al6061≈800, Acero≈2000]")
+    cut.add_argument("--Kte", type=float, default=10.0,
+                     help="Coef. de filo (N/mm)")
+    cut.add_argument("--cut-label", default="idle",
+                     help="Etiqueta para la condición de corte inicial")
     args = ap.parse_args()
 
     csv_path = args.csv if args.csv else _default_csv_path()
+
+    # Seleccionar motor de inferencia
+    engine = None
+    if not args.no_infer:
+        if args.engine == "bouc-wen":
+            try:
+                from cdaq_inference_engine import BoucWenInferenceEngine
+                engine = BoucWenInferenceEngine(fs=2500.0)
+                log.info("Motor: BoucWenInferenceEngine (KAN-PINN + Hilbert + FFT)")
+            except ImportError as e:
+                log.warning("No se pudo cargar BoucWenInferenceEngine: %s", e)
+                log.warning("Usando motor básico (stats)")
+        elif args.engine == "envelope":
+            try:
+                from cdaq_inference_engine import EnvelopeInferenceEngine
+                engine = EnvelopeInferenceEngine(fs=2500.0)
+                log.info("Motor: EnvelopeInferenceEngine (Hilbert+FFT+THD)")
+            except ImportError as e:
+                log.warning("No se pudo cargar EnvelopeInferenceEngine: %s", e)
+                log.warning("Usando motor básico (stats)")
+        else:
+            log.info("Motor de inferencia: básico (mean/std/rms)")
+
+    # Ruta del CSV de inferencia
+    infer_csv_path = None
+    if not args.no_infer and args.infer_csv != "none":
+        if args.infer_csv == "auto":
+            infer_csv_path = csv_path.replace(".csv", "_inference.csv")
+        else:
+            infer_csv_path = args.infer_csv
+
+    case_store_path = None
+    if args.llm and args.cases != "none":
+        if args.cases == "auto":
+            case_store_path = csv_path.replace(".csv", "_cases.jsonl")
+        else:
+            case_store_path = args.cases
+
+    # Condiciones de corte iniciales
+    cutting = CuttingConditions(
+        cut_id=0,
+        label=args.cut_label,
+        ap_mm=args.ap,
+        rpm_spindle=args.rpm,
+        rpm_feed=args.feed_rpm,
+        tool_diam_mm=args.tool_diam,
+        n_flutes=args.n_flutes,
+        Ktc=args.Ktc,
+        Kte=args.Kte,
+    )
+    if cutting.ap_mm > 0:
+        log.info(cutting.summary())
 
     daemon = ReceiverDaemon(
         sender_ip=args.sender_ip,
         csv_path=csv_path,
         enable_csv=not args.no_csv,
         enable_infer=not args.no_infer,
+        engine=engine,
+        infer_csv_path=infer_csv_path,
+        cutting=cutting,
+        llm_enable=args.llm,
+        llm_every_s=args.llm_every_s,
+        llm_timeout_s=args.llm_timeout_s,
+        llm_model=args.llm_model,
+        llm_url=args.llm_url,
+        case_store_path=case_store_path,
     )
 
     # Ctrl+C graceful

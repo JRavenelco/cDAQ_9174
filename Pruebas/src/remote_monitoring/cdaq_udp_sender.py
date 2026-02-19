@@ -115,7 +115,7 @@ class AcquisitionThread(threading.Thread):
             force_task.timing.cfg_samp_clk_timing(
                 rate=self.fs,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=self.spr * 50,
+                samps_per_chan=self.spr * 10,
             )
 
             # NI 9234 – IEPE acelerómetro
@@ -129,7 +129,7 @@ class AcquisitionThread(threading.Thread):
             accel_task.timing.cfg_samp_clk_timing(
                 rate=self.fs,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=self.spr * 50,
+                samps_per_chan=self.spr * 10,
             )
 
             force_task.start()
@@ -139,12 +139,8 @@ class AcquisitionThread(threading.Thread):
 
             while self.running:
                 try:
-                    f_data = force_task.read(
-                        number_of_samples_per_channel=self.spr,
-                        timeout=2.0)
-                    a_data = accel_task.read(
-                        number_of_samples_per_channel=self.spr,
-                        timeout=2.0)
+                    f_data = force_task.read(number_of_samples_per_channel=self.spr)
+                    a_data = accel_task.read(number_of_samples_per_channel=self.spr)
                     t_now = time.perf_counter()
                     force = np.asarray(f_data, dtype=np.float32)
                     accel = np.asarray(a_data, dtype=np.float32)
@@ -227,15 +223,7 @@ class UDPSenderThread(threading.Thread):
 
     def stop(self):
         self.running = False
-        # Socket se cierra después de que el loop termina
-        try:
-            self.join(timeout=2)
-        except RuntimeError:
-            pass
-        try:
-            self.sock.close()
-        except Exception:
-            pass
+        self.sock.close()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -358,14 +346,12 @@ if HAS_GUI:
             self.infer_thread = None
             self.streaming = False
 
-            # Plot buffers: list of numpy chunks, flattened periodically
-            self._force_chunks = []
-            self._accel_chunks = []
-            self._force_arr = np.empty(0, dtype=np.float32)
-            self._accel_arr = np.empty(0, dtype=np.float32)
-            self._buf_max = int(FORCE_FS * 5)  # 5 seconds
-            self._max_plot_points = 2000  # decimate for drawing
+            # Plot buffers (5 seconds)
+            self._buf_maxlen = int(FORCE_FS * 5)
+            self.force_buf = np.zeros(0, dtype=np.float32)
+            self.accel_buf = np.zeros(0, dtype=np.float32)
             self._fft_counter = 0
+            self._max_plot_points = 2000  # diezmar a esto para dibujar
 
             self._apply_dark_theme()
             self._build_ui()
@@ -616,10 +602,8 @@ if HAS_GUI:
             jetson_ip = self.ip_edit.text().strip()
 
             # Limpiar buffers y colas
-            self._force_chunks.clear()
-            self._accel_chunks.clear()
-            self._force_arr = np.empty(0, dtype=np.float32)
-            self._accel_arr = np.empty(0, dtype=np.float32)
+            self.force_buf = np.zeros(0, dtype=np.float32)
+            self.accel_buf = np.zeros(0, dtype=np.float32)
             for q in (self.data_queue, self.plot_queue):
                 while not q.empty():
                     try:
@@ -657,31 +641,36 @@ if HAS_GUI:
 
         # ── Actualización de gráficas (~30 FPS) ──────────────────
         def _update_plots(self):
-            # Drenar plot_queue → chunk lists
-            new_data = False
+            # Drenar plot_queue → buffers numpy (sin .tolist())
+            chunks_f = []
+            chunks_a = []
+            drained = 0
             while not self.plot_queue.empty():
                 try:
                     t_now, force, accel = self.plot_queue.get_nowait()
-                    self._force_chunks.append(force)
-                    self._accel_chunks.append(accel)
-                    new_data = True
+                    chunks_f.append(force)
+                    chunks_a.append(accel)
+                    drained += 1
                 except queue.Empty:
                     break
 
-            if not new_data:
+            if drained == 0 and len(self.force_buf) == 0:
                 return
 
-            # Consolidar chunks → arrays continuos (trim a _buf_max)
-            if self._force_chunks:
-                all_f = [self._force_arr] + self._force_chunks
-                all_a = [self._accel_arr] + self._accel_chunks
-                self._force_arr = np.concatenate(all_f)[-self._buf_max:]
-                self._accel_arr = np.concatenate(all_a)[-self._buf_max:]
-                self._force_chunks.clear()
-                self._accel_chunks.clear()
+            # Concatenar nuevos chunks y recortar al máximo del buffer
+            if drained > 0:
+                new_f = np.concatenate(chunks_f)
+                new_a = np.concatenate(chunks_a)
+                self.force_buf = np.concatenate(
+                    [self.force_buf, new_f])[-self._buf_maxlen:]
+                self.accel_buf = np.concatenate(
+                    [self.accel_buf, new_a])[-self._buf_maxlen:]
+            elif len(self.force_buf) > 0:
+                # Sin datos nuevos → no redibujar
+                return
 
-            force_arr = self._force_arr
-            accel_arr = self._accel_arr
+            force_arr = self.force_buf
+            accel_arr = self.accel_buf
             n = min(len(force_arr), len(accel_arr))
             if n < 2:
                 return
@@ -690,37 +679,41 @@ if HAS_GUI:
             accel_arr = accel_arr[-n:]
             fs = self.fs_spin.value()
 
-            # Decimate for drawing (max _max_plot_points)
-            step = max(1, n // self._max_plot_points)
-            f_dec = force_arr[::step]
-            a_dec = accel_arr[::step]
-            t_dec = np.linspace(-n / fs, 0, len(f_dec))
+            # Diezmar para dibujar (máx ~2000 puntos por curva)
+            if n > self._max_plot_points:
+                step = n // self._max_plot_points
+                f_plot = force_arr[::step]
+                a_plot = accel_arr[::step]
+                t_plot = np.linspace(-n / fs, 0, len(f_plot))
+            else:
+                f_plot = force_arr
+                a_plot = accel_arr
+                t_plot = np.linspace(-n / fs, 0, n)
 
             # Series de tiempo
-            self.force_curve.setData(t_dec, f_dec)
-            self.accel_curve.setData(t_dec, a_dec)
+            self.force_curve.setData(t_plot, f_plot)
+            self.accel_curve.setData(t_plot, a_plot)
 
-            # Superposición normalizada (sobre tail reciente)
+            # Superposición normalizada (usar solo últimos 1000 pts para stats)
             tail = min(n, 1000)
             f_tail = force_arr[-tail:]
             a_tail = accel_arr[-tail:]
             f_std = np.std(f_tail)
             a_std = np.std(a_tail)
             if f_std > 1e-6 and a_std > 1e-6:
-                f_norm = (f_tail - np.mean(f_tail)) / f_std
-                a_norm = (a_tail - np.mean(a_tail)) / a_std
-                t_ov = np.linspace(-tail / fs, 0, tail)
-                self.overlay_force_curve.setData(t_ov, f_norm)
-                self.overlay_accel_curve.setData(t_ov, a_norm)
+                f_norm = (f_plot - np.mean(f_tail)) / f_std
+                a_norm = (a_plot - np.mean(a_tail)) / a_std
+                self.overlay_force_curve.setData(t_plot, f_norm)
+                self.overlay_accel_curve.setData(t_plot, a_norm)
 
-            # Info labels (sobre tail)
-            self.force_val_label.setText(f"{f_tail[-1]:.4f} V")
+            # Info labels (stats sobre la cola reciente, no todo el buffer)
+            self.force_val_label.setText(f"{force_arr[-1]:.4f} V")
             self.force_rms_label.setText(
                 f"RMS: {np.sqrt(np.mean(f_tail**2)):.4f} V")
             self.force_pp_label.setText(
                 f"Pk-Pk: {np.ptp(f_tail):.4f} V")
 
-            self.accel_val_label.setText(f"{a_tail[-1]:.4f} g")
+            self.accel_val_label.setText(f"{accel_arr[-1]:.4f} g")
             self.accel_rms_label.setText(
                 f"RMS: {np.sqrt(np.mean(a_tail**2)):.4f} g")
             self.accel_pp_label.setText(
@@ -775,7 +768,25 @@ if HAS_GUI:
                     and self.infer_thread.last_values is not None):
                 v = self.infer_thread.last_values
                 seq = self.infer_thread.last_seq
-                if len(v) >= 6:
+                if len(v) >= 23:
+                    # Bouc-Wen engine (Nivel 2)
+                    cut = "🔴 CORTE" if v[7] > 0.5 else "⚪ reposo"
+                    txt = (f"Seq:{seq}  {cut}  "
+                           f"F_bw={v[12]:.4f}V  "
+                           f"z={v[15]:.4f}  "
+                           f"R²={v[18]:.3f}  "
+                           f"Hyst={v[20]:.1f}%  "
+                           f"f₀={v[3]:.1f}Hz  "
+                           f"α={v[17]:.3f}")
+                elif len(v) >= 12:
+                    # Envelope engine (Nivel 1)
+                    cut = "🔴 CORTE" if v[7] > 0.5 else "⚪ reposo"
+                    txt = (f"Seq:{seq}  {cut}  "
+                           f"F_est={v[0]:.4f}V(pk:{v[1]:.4f})  "
+                           f"Env={v[2]:.4f}g  "
+                           f"f₀={v[3]:.1f}Hz  "
+                           f"THD_a={v[5]:.1f}% THD_f={v[6]:.1f}%")
+                elif len(v) >= 6:
                     txt = (f"Seq:{seq}  "
                            f"F: mean={v[0]:.4f} std={v[1]:.4f} "
                            f"rms={v[2]:.4f}  |  "
