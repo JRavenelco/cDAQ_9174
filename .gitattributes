@@ -1,0 +1,1 @@
+Pruebas/src/remote_monitoring/logs/*.csv filter=lfs diff=lfs merge=lfs -text

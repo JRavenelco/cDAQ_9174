@@ -5,6 +5,7 @@
 
 # ── Whitelist: top-level config ──
 !.gitignore
+!.gitattributes
 !README.md
 
 # ── Whitelist: remote_monitoring (main project) ──
@@ -14,6 +15,11 @@
 !Pruebas/src/remote_monitoring/*.py
 !Pruebas/src/remote_monitoring/*.cpp
 !Pruebas/src/remote_monitoring/README.md
+
+!Pruebas/src/remote_monitoring/logs/
+!Pruebas/src/remote_monitoring/logs/cdaq_remote_*.csv
+!Pruebas/src/remote_monitoring/logs/cdaq_remote_*_inference.csv
+!Pruebas/src/remote_monitoring/logs/cdaq_remote_*_cases.jsonl
 
 # ── Whitelist: caracterizacion (reference) ──
 !Pruebas/src/caracterizacion_sensor_fuerza.py

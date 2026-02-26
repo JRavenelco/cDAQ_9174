@@ -39,16 +39,22 @@ if _user_base:
     sys.path = [p for p in sys.path if not (p and os.path.normpath(p).startswith(_user_base_n))]
 
 import numpy as np
+_HAVE_SCIPY = False
+hilbert = None
+butter = None
+sosfilt = None
+cumulative_trapezoid = None
 try:
-    from scipy.signal import hilbert, butter, sosfilt
-    from scipy.integrate import cumulative_trapezoid
-    _HAVE_SCIPY = True
+    _np_major = int(str(np.__version__).split(".", 1)[0])
 except Exception:
-    hilbert = None
-    butter = None
-    sosfilt = None
-    cumulative_trapezoid = None
-    _HAVE_SCIPY = False
+    _np_major = 0
+if _np_major < 2:
+    try:
+        from scipy.signal import hilbert, butter, sosfilt
+        from scipy.integrate import cumulative_trapezoid
+        _HAVE_SCIPY = True
+    except Exception:
+        _HAVE_SCIPY = False
 
 # Importar clase base del receiver
 import os, sys
@@ -313,9 +319,51 @@ class BoucWenInferenceEngine(EnvelopeInferenceEngine):
         except Exception:
             self._cpp = None
 
+        if self._cpp is not None and not self._cpp_self_test():
+            self._cpp = None
+
         self._v_state = 0.0
         self._x_state = 0.0
         self._prev_accel = 0.0
+
+    def _cpp_self_test(self) -> bool:
+        """Valida el módulo C++ opcional.
+
+        Si el módulo está mal compilado o devuelve un vector degenerado
+        (p. ej. todas las features iguales), lo deshabilitamos para evitar
+        generar datasets basura (CSV/cases) para Ollama.
+        """
+        try:
+            if self._cpp is None:
+                return False
+
+            blk = 100
+            force = np.zeros(blk, dtype=np.float32)
+            accel = (np.ones(blk, dtype=np.float32) * 0.1)
+            out = self._cpp.process_block(force, accel, float(self.fs))
+            if out is None:
+                return False
+            arr = np.asarray(out, dtype=np.float32).ravel()
+            if arr.shape[0] != len(self.RESULT_NAMES):
+                return False
+            if not np.all(np.isfinite(arr)):
+                return False
+
+            # Si todas las columnas son iguales (std ~ 0), es un síntoma claro
+            # de salida corrupta/placeholder.
+            if float(np.std(arr)) < 1e-6:
+                return False
+
+            expected_f_est_mean = float(self.K_ENV * float(np.mean(np.abs(accel))) + self.B_ENV)
+            if not np.isfinite(expected_f_est_mean):
+                return False
+            # Tolerancia amplia: solo busca descartar valores absurdos.
+            if abs(float(arr[0]) - expected_f_est_mean) > max(1.0, 0.5 * abs(expected_f_est_mean)):
+                return False
+
+            return True
+        except Exception:
+            return False
 
     def _update_fs(self, fs):
         super()._update_fs(fs)
@@ -410,7 +458,15 @@ class BoucWenInferenceEngine(EnvelopeInferenceEngine):
             )
             if out is None:
                 return None
-            return np.asarray(out, dtype=np.float32)
+            arr = np.asarray(out, dtype=np.float32).ravel()
+            # Validación rápida en runtime: si el módulo devuelve un vector
+            # degenerado o inválido, caemos a la ruta Python.
+            if (arr.shape[0] != len(self.RESULT_NAMES)
+                    or (not np.all(np.isfinite(arr)))
+                    or float(np.std(arr)) < 1e-6):
+                self._cpp = None
+            else:
+                return arr
 
         self._update_fs(fs)
         self._accumulate(force, accel)
