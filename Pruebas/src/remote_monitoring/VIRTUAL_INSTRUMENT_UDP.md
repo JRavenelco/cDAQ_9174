@@ -38,6 +38,41 @@ El receiver guarda:
 - `logs/virtual_instrument_YYYYMMDD_HHMMSS.csv`: senal completa recibida.
 - `logs/virtual_instrument_YYYYMMDD_HHMMSS_cases.jsonl`: features por ventana para alimentar el razonador basado en casos.
 
+## 3. Convertir logs UDP al formato de `razonador_casos`
+
+Desde `Pruebas/src/remote_monitoring`:
+
+```powershell
+python udp_logs_to_cases.py
+```
+
+Ese comando busca automaticamente el ultimo par disponible en `logs/` y genera salidas en:
+
+- `../caracterizacion_fuerza/razonador_casos/salidas/casos_virtual_udp/casos_virtuales.jsonl`
+- `../caracterizacion_fuerza/razonador_casos/salidas/casos_virtual_udp/casos_virtuales.csv`
+- `../caracterizacion_fuerza/razonador_casos/salidas/casos_virtual_udp/casos_comparables_con_historicos.jsonl`
+
+Si quieres convertir archivos concretos:
+
+```powershell
+python udp_logs_to_cases.py --csv .\logs\virtual_instrument_YYYYMMDD_HHMMSS.csv --cases .\logs\virtual_instrument_YYYYMMDD_HHMMSS_cases.jsonl
+```
+
+Opciones utiles:
+
+```powershell
+python udp_logs_to_cases.py --limit 5
+python udp_logs_to_cases.py --out-dir ..\caracterizacion_fuerza\razonador_casos\salidas\casos_virtual_udp_prueba
+python udp_logs_to_cases.py --historicos-jsonl ..\caracterizacion_fuerza\razonador_casos\salidas\casos_dataset\casos_historicos.jsonl
+```
+
+El adaptador intenta reconstruir cada ventana usando el CSV crudo para producir archivos auxiliares compatibles con el flujo Bouc-Wen:
+
+- `features/*.csv`
+- `boucwen_ready/*.txt`
+- `ventanas/*.txt`
+- comando sugerido para `comparar_bouc_wen_shaker_corte.py`
+
 ## Protocolo
 
 UDP binario pequeno, sin dependencias externas:
