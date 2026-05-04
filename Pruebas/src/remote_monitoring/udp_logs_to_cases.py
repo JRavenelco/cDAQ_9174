@@ -1,30 +1,85 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
+import csv
 import json
+import math
 import os
 import re
-import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 SRC_ROOT = Path(__file__).resolve().parents[1]
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
-from caracterizacion_fuerza.razonador_casos.construir_casos import (  # type: ignore
-    CaseRecord,
-    loop_area,
-    normalize_signal,
-    rms,
-)
+
+@dataclass
+class CaseRecord:
+    case_id: str
+    source_kind: str
+    source_file: str
+    source_relpath: str
+    duplicate_group: str
+    is_duplicate_candidate: bool
+    rpm_nominal_filename: float | str
+    paso_filename: float | str
+    rpm_estimada: float | str
+    fs_hz: float
+    duration_s: float
+    n_samples: int
+    force_col: str
+    input_col: str
+    force_mean: float
+    force_std: float
+    force_rms: float
+    force_peak_abs: float
+    input_mean: float
+    input_std: float
+    input_rms: float
+    input_peak_abs: float
+    corr_force_input: float
+    loop_area_norm: float
+    window_start_s: float
+    window_end_s: float
+    boucwen_ready_relpath: str
+    window_relpath: str
+    features_relpath: str
+    suggested_boucwen_out_relpath: str
+    suggested_boucwen_command: str
+    thesis_role: str
 
 
 def car_root() -> Path:
     return SRC_ROOT / "caracterizacion_fuerza"
+
+
+def normalize_signal(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=float)
+    centered = x - np.nanmean(x)
+    scale = np.nanmax(np.abs(centered))
+    if not np.isfinite(scale) or scale <= 1e-12:
+        return np.zeros_like(centered)
+    return centered / scale
+
+
+def rms(x: np.ndarray | list[float]) -> float:
+    arr = np.asarray(x, dtype=float)
+    if len(arr) == 0:
+        return 0.0
+    return float(np.sqrt(np.nanmean(arr ** 2)))
+
+
+def loop_area(input_norm: np.ndarray, force_norm: np.ndarray) -> float:
+    if len(input_norm) < 3:
+        return 0.0
+    dx = np.gradient(input_norm)
+    area = abs(float(np.nansum(force_norm * dx)))
+    rect = (np.nanmax(input_norm) - np.nanmin(input_norm)) * (np.nanmax(force_norm) - np.nanmin(force_norm))
+    if not np.isfinite(rect) or rect <= 1e-12:
+        return 0.0
+    value = area / rect
+    return float(value) if np.isfinite(value) else 0.0
 
 
 def std_from_mean_rms(mean: float, rms_value: float) -> float:
@@ -46,8 +101,7 @@ def discover_latest_pair(logs_dir: Path) -> tuple[Path | None, Path | None]:
         csv_files = sorted(logs_dir.glob("virtual_instrument_*.csv"), key=lambda p: p.stat().st_mtime)
         return (csv_files[-1], None) if csv_files else (None, None)
     cases_path = case_files[-1]
-    csv_name = cases_path.name.replace("_cases.jsonl", ".csv")
-    csv_path = cases_path.with_name(csv_name)
+    csv_path = cases_path.with_name(cases_path.name.replace("_cases.jsonl", ".csv"))
     return (csv_path if csv_path.exists() else None, cases_path)
 
 
@@ -55,10 +109,8 @@ def infer_pair(csv_path: Path | None, cases_path: Path | None) -> tuple[Path | N
     if csv_path is None and cases_path is None:
         return None, None
     if csv_path is None and cases_path is not None:
-        name = cases_path.name
-        if name.endswith("_cases.jsonl"):
-            candidate = cases_path.with_name(name.replace("_cases.jsonl", ".csv"))
-            return (candidate if candidate.exists() else None, cases_path)
+        candidate = cases_path.with_name(cases_path.name.replace("_cases.jsonl", ".csv"))
+        return (candidate if candidate.exists() else None, cases_path)
     if cases_path is None and csv_path is not None:
         candidate = csv_path.with_name(csv_path.stem + "_cases.jsonl")
         return (csv_path, candidate if candidate.exists() else None)
@@ -70,73 +122,107 @@ def load_cases_jsonl(path: Path) -> list[dict]:
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
-            if not line:
-                continue
-            records.append(json.loads(line))
+            if line:
+                records.append(json.loads(line))
     return records
 
 
-def load_raw_csv(path: Path | None) -> pd.DataFrame | None:
+def load_raw_csv(path: Path | None) -> list[dict] | None:
     if path is None or not path.exists():
         return None
-    df = pd.read_csv(path)
+    with path.open("r", newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
     needed = {"seq", "t_sample_s", "fs_hz", "mode", "force_v", "accel_g"}
-    if not needed.issubset(df.columns):
+    if rows and not needed.issubset(rows[0].keys()):
         raise ValueError(f"CSV sin columnas esperadas: {path}")
-    return df
+    return rows
+
+
+def f(row: dict, key: str, default: float = 0.0) -> float:
+    try:
+        value = float(row.get(key, default))
+        return value if math.isfinite(value) else default
+    except Exception:
+        return default
+
+
+def rows_for_feature(csv_rows: list[dict] | None, seq: int, fs: float, window_seconds: float) -> list[dict] | None:
+    if not csv_rows:
+        return None
+    n_window = max(16, int(round(window_seconds * fs)))
+    eligible = [row for row in csv_rows if int(float(row.get("seq", 0))) <= seq]
+    return eligible[-n_window:] if eligible else None
+
+
+def write_rows(path: Path, rows: list[dict], delimiter: str = ",") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter=delimiter)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def format_float(value: float) -> str:
+    return f"{float(value):.9g}"
 
 
 def build_signal_artifacts(
     case_id: str,
-    case_rows: pd.DataFrame | None,
+    case_rows: list[dict] | None,
     out_root: Path,
     window_seconds: float,
 ) -> tuple[str, str, str, np.ndarray, np.ndarray, np.ndarray, float, float, int]:
-    if case_rows is None or case_rows.empty:
+    if not case_rows:
         return "", "", "", np.array([]), np.array([]), np.array([]), 0.0, 0.0, 0
 
-    t_abs = case_rows["t_sample_s"].to_numpy(dtype=float)
+    t_abs = np.asarray([f(row, "t_sample_s") for row in case_rows], dtype=float)
     t = t_abs - t_abs[0]
-    force = case_rows["force_v"].to_numpy(dtype=float)
-    accel = case_rows["accel_g"].to_numpy(dtype=float)
+    force = np.asarray([f(row, "force_v") for row in case_rows], dtype=float)
+    accel = np.asarray([f(row, "accel_g") for row in case_rows], dtype=float)
     force_norm = normalize_signal(force)
     input_norm = normalize_signal(accel)
 
-    features_df = pd.DataFrame(
-        {
-            "tiempo_s": t,
-            "fuerza_original": force,
-            "entrada_original": accel,
-            "fuerza_norm": force_norm,
-            "entrada_norm": input_norm,
-        }
-    )
-    ready_df = pd.DataFrame(
-        {
-            "tiempo_s": t,
-            "fuerza_norm": force_norm,
-            "entrada_norm": input_norm,
-        }
-    )
-    window_df = pd.DataFrame(
-        {
-            "tiempo_s": t,
-            "fuerza_V": force,
-            "entrada_g": accel,
-            "fuerza_norm": force_norm,
-            "entrada_norm": input_norm,
-        }
-    )
+    feature_rows = []
+    ready_rows = []
+    window_rows = []
+    for i in range(len(t)):
+        feature_rows.append(
+            {
+                "tiempo_s": format_float(t[i]),
+                "fuerza_original": format_float(force[i]),
+                "entrada_original": format_float(accel[i]),
+                "fuerza_norm": format_float(force_norm[i]),
+                "entrada_norm": format_float(input_norm[i]),
+            }
+        )
+        ready_rows.append(
+            {
+                "tiempo_s": format_float(t[i]),
+                "fuerza_norm": format_float(force_norm[i]),
+                "entrada_norm": format_float(input_norm[i]),
+            }
+        )
+        window_rows.append(
+            {
+                "tiempo_s": format_float(t[i]),
+                "fuerza_V": format_float(force[i]),
+                "entrada_g": format_float(accel[i]),
+                "fuerza_norm": format_float(force_norm[i]),
+                "entrada_norm": format_float(input_norm[i]),
+            }
+        )
 
     features_path = out_root / "features" / f"{case_id}_features.csv"
     ready_path = out_root / "boucwen_ready" / f"{case_id}_boucwen_ready.txt"
     window_path = out_root / "ventanas" / f"{case_id}_ventana_{window_seconds:g}s.txt"
-    features_path.parent.mkdir(parents=True, exist_ok=True)
-    ready_path.parent.mkdir(parents=True, exist_ok=True)
-    window_path.parent.mkdir(parents=True, exist_ok=True)
-    features_df.to_csv(features_path, index=False, float_format="%.9g")
-    ready_df.to_csv(ready_path, sep="\t", index=False, float_format="%.9g")
-    window_df.to_csv(window_path, sep="\t", index=False, float_format="%.9g")
+    write_rows(features_path, feature_rows)
+    write_rows(ready_path, ready_rows, delimiter="\t")
+    write_rows(window_path, window_rows, delimiter="\t")
     return (
         rel_any(features_path, car_root()),
         rel_any(ready_path, car_root()),
@@ -152,7 +238,7 @@ def build_signal_artifacts(
 
 def record_from_feature(
     feature: dict,
-    csv_df: pd.DataFrame | None,
+    csv_rows: list[dict] | None,
     csv_path: Path | None,
     out_root: Path,
     default_shaker: Path,
@@ -164,15 +250,11 @@ def record_from_feature(
     base_case_id = str(feature.get("case_id") or f"virtual_udp_{mode}_{seq:06d}")
     case_id = sanitize_case_id(base_case_id)
     window_seconds = float(feature.get("window_seconds", fallback_window_seconds))
-
-    rows = None
-    if csv_df is not None:
-        n_window = max(16, int(round(window_seconds * fs)))
-        rows = csv_df.loc[csv_df["seq"] <= seq].tail(n_window).copy()
+    case_rows = rows_for_feature(csv_rows, seq, fs, window_seconds)
 
     features_relpath, ready_relpath, window_relpath, t_abs, force, accel, w_start, w_end, n_samples = build_signal_artifacts(
         case_id=case_id,
-        case_rows=rows,
+        case_rows=case_rows,
         out_root=out_root,
         window_seconds=window_seconds,
     )
@@ -190,8 +272,7 @@ def record_from_feature(
         force_norm = normalize_signal(force)
         input_norm = normalize_signal(accel)
         corr = float(np.corrcoef(force_norm, input_norm)[0, 1]) if len(force_norm) > 2 else 0.0
-        if not np.isfinite(corr):
-            corr = 0.0
+        corr = corr if np.isfinite(corr) else 0.0
         loop_norm = loop_area(input_norm, force_norm)
     else:
         duration_s = window_seconds
@@ -271,6 +352,26 @@ def load_historic_jsonl(path: Path) -> list[dict]:
     return rows
 
 
+def write_dict_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", type=Path, default=None)
@@ -291,7 +392,7 @@ def main() -> int:
     out_root = (args.out_dir or (car_root() / "razonador_casos" / "salidas" / "casos_virtual_udp")).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
 
-    csv_df = load_raw_csv(csv_path)
+    csv_rows = load_raw_csv(csv_path)
     feature_rows = load_cases_jsonl(cases_path)
     if args.limit and args.limit > 0:
         feature_rows = feature_rows[: args.limit]
@@ -300,7 +401,7 @@ def main() -> int:
     records = [
         record_from_feature(
             feature=row,
-            csv_df=csv_df,
+            csv_rows=csv_rows,
             csv_path=csv_path,
             out_root=out_root,
             default_shaker=default_shaker,
@@ -309,24 +410,18 @@ def main() -> int:
         for row in feature_rows
     ]
 
-    records_df = pd.DataFrame([asdict(r) for r in records])
+    record_dicts = [asdict(r) for r in records]
     csv_out = out_root / "casos_virtuales.csv"
     jsonl_out = out_root / "casos_virtuales.jsonl"
-    records_df.to_csv(csv_out, index=False)
-    with jsonl_out.open("w", encoding="utf-8") as fh:
-        for record in records:
-            fh.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+    write_dict_csv(csv_out, record_dicts)
+    write_jsonl(jsonl_out, record_dicts)
 
     historicos_path = args.historicos_jsonl or (car_root() / "razonador_casos" / "salidas" / "casos_dataset" / "casos_historicos.jsonl")
     historicos = load_historic_jsonl(historicos_path)
     if historicos:
-        merged = historicos + [asdict(r) for r in records]
-        merged_jsonl = out_root / "casos_comparables_con_historicos.jsonl"
-        merged_csv = out_root / "casos_comparables_con_historicos.csv"
-        with merged_jsonl.open("w", encoding="utf-8") as fh:
-            for row in merged:
-                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        pd.DataFrame(merged).to_csv(merged_csv, index=False)
+        merged = historicos + record_dicts
+        write_jsonl(out_root / "casos_comparables_con_historicos.jsonl", merged)
+        write_dict_csv(out_root / "casos_comparables_con_historicos.csv", merged)
 
     print(f"CSV fuente: {csv_path if csv_path else 'N/A'}")
     print(f"Cases fuente: {cases_path}")
