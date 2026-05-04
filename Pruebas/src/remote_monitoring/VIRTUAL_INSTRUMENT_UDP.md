@@ -83,3 +83,39 @@ UDP binario pequeno, sin dependencias externas:
 - canales: `force_v`, `accel_g`
 
 El emulador incluye una memoria tipo Bouc-Wen ligera para que la fuerza tenga lazo histeretico respecto a la aceleracion.
+
+## 4. Comparar casos virtuales contra historicos
+
+Despues de convertir logs UDP a casos:
+
+```powershell
+python compare_udp_cases.py
+```
+
+Ese comando lee por defecto:
+
+- `../caracterizacion_fuerza/razonador_casos/salidas/casos_virtual_udp/casos_virtuales.jsonl`
+- `../caracterizacion_fuerza/razonador_casos/salidas/casos_dataset/casos_historicos.jsonl`
+
+Y genera:
+
+- `../caracterizacion_fuerza/razonador_casos/salidas/casos_virtual_udp/casos_virtuales_ranked.jsonl`
+- `../caracterizacion_fuerza/razonador_casos/salidas/casos_virtual_udp/casos_virtuales_ranked.csv`
+
+Cada registro incluye:
+
+- `matched_case_id`
+- `similarity_score`
+- `top_matches`
+- `run_boucwen_next`
+- `recommended_boucwen_reference`
+- `diagnostic_label_seed`
+- `llm_summary_seed`
+
+Ejemplos:
+
+```powershell
+python compare_udp_cases.py --top-k 5
+python compare_udp_cases.py --weights loop_area_norm=2,input_rms=1.2
+python compare_udp_cases.py --virtual-jsonl ..\caracterizacion_fuerza\razonador_casos\salidas\casos_virtual_udp\casos_virtuales.jsonl --historical-jsonl ..\caracterizacion_fuerza\razonador_casos\salidas\casos_dataset\casos_historicos.jsonl
+```
