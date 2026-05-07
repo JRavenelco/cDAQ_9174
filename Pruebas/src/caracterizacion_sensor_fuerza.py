@@ -19,9 +19,28 @@ Experimentos:
 """
 
 import sys
+import os
 import time
 import queue
 import threading
+import socket
+import struct
+
+# Fix Unicode emoji rendering on Windows terminals (cp1252)
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+# ─── Protocolo UDP compartido con Jetson ─────────────────────────
+_here = os.path.dirname(os.path.abspath(__file__))
+_proto_dir = os.path.join(_here, "remote_monitoring")
+if _proto_dir not in sys.path:
+    sys.path.insert(0, _proto_dir)
+from cdaq_udp_protocol import (
+    DATA_PORT, MAGIC, HDR_FMT, HDR_SIZE, pack_data,
+)
 import numpy as np
 import pyqtgraph as pg
 from PyQt5 import QtWidgets, QtCore, QtGui
@@ -34,7 +53,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtCore import Qt, QTimer
 from datetime import datetime
-import os
 from collections import deque
 from scipy import signal
 from scipy.fft import fft, fftfreq
@@ -63,9 +81,9 @@ FORCE_MIN_V = -5.0
 FORCE_MAX_V = 5.0
 FORCE_TERMINAL = TerminalConfiguration.DIFF if HAS_NIDAQMX else None
 
-# NI 9234 - Aceleración (2 CANALES)
+# NI 9234 - Aceleración (1 CANAL: bancada)
 ACCEL_DEVICE = "cDAQ1Mod2"
-ACCEL_CHANNELS = ["ai0", "ai1"]  # 2 acelerómetros
+ACCEL_CHANNELS = ["ai0"]  # Solo acelerómetro en bancada
 ACCEL_SAMPLE_RATE = 2500  # Hz
 
 # SIN CALIBRACIÓN - Datos crudos en voltios
@@ -81,8 +99,8 @@ INA849_GANANCIA = "N/A"
 
 # Parámetros de los acelerómetros PCB 352C33
 ACEL_SENSIBILIDAD_MV_G = 100.0  # mV/g (ambos sensores)
-# ai0: Acelerómetro en PRENSA (filtrado mecánico - envolvente)
-# ai1: Acelerómetro en PIEZA (directo - fuerza de corte)
+# ai0: Acelerómetro en BANCADA
+# ai1: Acelerómetro en PIEZA
 
 # Masa de prueba (ajustar según tu configuración)
 MASA_PRUEBA_KG = 0.5  # kg
@@ -199,7 +217,7 @@ class AccelAcquisitionThread(threading.Thread):
     Hilo para adquisición de aceleración (NI 9234) - 2 CANALES
     
     Canal 0 (ai0): Acelerómetro en bancada
-    Canal 1 (ai1): Acelerómetro sobre sensor de fuerza
+    Canal 1 (ai1): Acelerómetro en pieza
     """
     def __init__(self):
         super().__init__(daemon=True)
@@ -299,7 +317,7 @@ class AccelAcquisitionThread(threading.Thread):
             phase0 = np.radians(15)
             acel0 = 0.3 * np.sin(2 * np.pi * freq_sim * t_arr + phase0) + 0.01 * np.random.randn(self.samples_per_read)
             
-            # Canal 1: Acelerómetro sobre sensor de fuerza (más cercano a la fuente)
+            # Canal 1: Acelerómetro en pieza (más cercano a la zona de corte)
             phase1 = np.radians(5)  # Menos desfase, más directo
             acel1 = 0.35 * np.sin(2 * np.pi * freq_sim * t_arr + phase1) + 0.01 * np.random.randn(self.samples_per_read)
             
@@ -313,6 +331,96 @@ class AccelAcquisitionThread(threading.Thread):
             
     def stop(self):
         self.running = False
+
+
+# ============================================
+# HILO DE ENVÍO UDP A JETSON
+# ============================================
+
+class UDPSenderThread(threading.Thread):
+    """Hilo que envía bloques (fuerza + accel) vía UDP a la Jetson.
+
+    Diseñado para no interferir con la captura en tiempo real:
+    - send() es no-bloqueante (put_nowait, descarta si cola llena)
+    - El socket UDP se crea en background; si la Jetson no responde,
+      los paquetes simplemente se pierden sin afectar la adquisición.
+    - Todo el trabajo pesado (pack_data, sendto) corre en este hilo,
+      nunca en el hilo principal ni en los hilos de adquisición.
+    """
+
+    def __init__(self, jetson_ip: str, port: int = DATA_PORT):
+        super().__init__(daemon=True)
+        self.jetson_ip = jetson_ip
+        self.port = port
+        self.running = True
+        self.queue = queue.Queue(maxsize=100)
+        self.seq = 0
+        self.sock = None
+        self.bytes_sent = 0
+        self.packets_sent = 0
+        self.packets_dropped = 0
+        self._sock_ready = threading.Event()
+
+    def run(self):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.settimeout(0.5)
+            self._sock_ready.set()
+        except Exception as e:
+            print(f"[UDP] Error creando socket: {e}")
+            return
+
+        print(f"[UDP] Enviando a Jetson {self.jetson_ip}:{self.port}")
+
+        while self.running:
+            try:
+                item = self.queue.get(timeout=0.3)
+                if item is None:
+                    break
+                force_chunk, accel_chunk = item
+                t_s = time.perf_counter()
+                packet = pack_data(self.seq, t_s, FORCE_SAMPLE_RATE,
+                                   np.asarray(force_chunk, dtype=np.float32),
+                                   np.asarray(accel_chunk, dtype=np.float32))
+                self.sock.sendto(packet, (self.jetson_ip, self.port))
+                self.seq += 1
+                self.bytes_sent += len(packet)
+                self.packets_sent += 1
+            except queue.Empty:
+                continue
+            except (OSError, socket.error) as e:
+                # Jetson inalcanzable — descartar silenciosamente
+                if self.running and self.packets_sent == 0:
+                    print(f"[UDP] Jetson {self.jetson_ip}:{self.port} no alcanzable — paquetes se descartan")
+                self.packets_dropped += 1
+            except Exception as e:
+                if self.running:
+                    print(f"[UDP] Error: {e}")
+                self.packets_dropped += 1
+
+    def send(self, force_chunk, accel_chunk):
+        """Encola un bloque para envío. No bloquea nunca: si la cola está
+        llena, descarta el paquete para no frenar la adquisición."""
+        if not self.running:
+            return
+        try:
+            self.queue.put_nowait((force_chunk, accel_chunk))
+        except queue.Full:
+            self.packets_dropped += 1
+
+    def stop(self):
+        self.running = False
+        try:
+            self.queue.put_nowait(None)
+        except queue.Full:
+            pass
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+        print(f"[UDP] Detenido — {self.packets_sent} enviados, "
+              f"{self.packets_dropped} descartados, {self.bytes_sent/1024:.1f} kB")
 
 
 # ============================================
@@ -334,19 +442,19 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         self.buffer_size = int(FORCE_SAMPLE_RATE * 2)  # 2 segundos
         self.force_buffer = deque(maxlen=self.buffer_size)
         self.accel_buffer_0 = deque(maxlen=self.buffer_size)  # ai0: bancada
-        self.accel_buffer_1 = deque(maxlen=self.buffer_size)  # ai1: sobre sensor fuerza
+        self.accel_buffer_1 = deque(maxlen=self.buffer_size)  # ai1: pieza
         
         # Datos acumulados para análisis
         self.all_force_data = []
         self.all_accel_data_0 = []  # Bancada
-        self.all_accel_data_1 = []  # Sobre sensor
+        self.all_accel_data_1 = []  # Pieza
         
         # Resultados de experimentos
         self.experimentos = []
         
         # Modo de experimento (SWEEP, TRIANGLE o CUTTING)
         self.experiment_mode = "SWEEP"
-        self.use_single_accel = False  # True = solo usar canal 0 (modo corte)
+        self.use_single_accel = True   # Solo canal ai0 activo  # True = solo usar canal 0 (modo corte)
         
         # Buffers para análisis de fricción (desplazamiento integrado)
         self.displacement_buffer = deque(maxlen=self.buffer_size)
@@ -354,7 +462,10 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         # Timer de actualización
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_plots)
-        
+
+        # UDP a Jetson
+        self.udp_sender = None
+
         # Aplicar tema oscuro
         self.apply_dark_theme()
         
@@ -439,9 +550,27 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         self.notas_edit = QLineEdit()
         self.notas_edit.setPlaceholderText("Descripción del experimento...")
         config_layout.addWidget(self.notas_edit, 1, 5)
-        
+
+        # ── Jetson UDP ──
+        config_layout.addWidget(QLabel("🛰 Jetson UDP:"), 3, 0)
+        self.udp_enabled_cb = QCheckBox("Enviar a Jetson")
+        self.udp_enabled_cb.setToolTip("Activar envio UDP a la Jetson para inferencia remota")
+        config_layout.addWidget(self.udp_enabled_cb, 3, 1)
+
+        config_layout.addWidget(QLabel("IP Jetson:"), 3, 2)
+        self.jetson_ip_edit = QLineEdit()
+        self.jetson_ip_edit.setPlaceholderText("192.168.137.164")
+        self.jetson_ip_edit.setText("192.168.137.164")
+        config_layout.addWidget(self.jetson_ip_edit, 3, 3)
+
+        config_layout.addWidget(QLabel("Puerto:"), 3, 4)
+        self.udp_port_spin = QSpinBox()
+        self.udp_port_spin.setRange(1024, 65535)
+        self.udp_port_spin.setValue(DATA_PORT)
+        config_layout.addWidget(self.udp_port_spin, 3, 5)
+
         main_layout.addWidget(config_group)
-        
+
         # === PANEL DE FILTRADO ===
         filter_group = QGroupBox("🔧 Filtrado de Señales")
         filter_layout = QHBoxLayout(filter_group)
@@ -517,7 +646,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         info_layout.addWidget(self.accel0_rms_label, 1, 2)
         
         # Aceleración Canal 1 (Sobre sensor de fuerza)
-        info_layout.addWidget(QLabel("📡 ACEL SENSOR (ai1):"), 2, 0)
+        info_layout.addWidget(QLabel("📡 ACEL PIEZA (ai1):"), 2, 0)
         self.accel1_g_label = QLabel("Acel: 0.000 g")
         self.accel1_rms_label = QLabel("RMS: 0.000 g")
         info_layout.addWidget(self.accel1_g_label, 2, 1)
@@ -621,7 +750,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         self.accel_plot.setLabel('bottom', 'Tiempo', 's')
         self.accel_plot.showGrid(x=True, y=True, alpha=0.3)
         self.accel_curve = self.accel_plot.plot(pen=pg.mkPen('#e74c3c', width=2), name='Bancada (ai0)')
-        self.accel_curve_1 = self.accel_plot.plot(pen=pg.mkPen('#f39c12', width=2), name='Sensor (ai1)')
+        self.accel_curve_1 = self.accel_plot.plot(pen=pg.mkPen('#f39c12', width=2), name='Pieza (ai1)')
         self.accel_plot.addLegend()
         splitter.addWidget(self.accel_plot)
         
@@ -662,7 +791,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         self.fft_accel_plot.setLabel('left', 'Magnitud', 'dB')
         self.fft_accel_plot.setLabel('bottom', 'Frecuencia', 'Hz')
         self.fft_accel_plot.showGrid(x=True, y=True, alpha=0.3)
-        self.fft_accel_curve = self.fft_accel_plot.plot(pen=pg.mkPen('#e74c3c', width=2), name='Prensa (ai0)')
+        self.fft_accel_curve = self.fft_accel_plot.plot(pen=pg.mkPen('#e74c3c', width=2), name='Bancada (ai0)')
         self.fft_accel_curve_1 = self.fft_accel_plot.plot(pen=pg.mkPen('#f39c12', width=2), name='Pieza (ai1)')
         # Etiquetas de frecuencia pico
         self.fft_accel_label_0 = pg.TextItem(anchor=(0, 1), color='#e74c3c')
@@ -814,23 +943,23 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             self.velocity_spin.setEnabled(False)
             self.rpm_husillo_spin.setEnabled(False)
             self.rpm_avance_spin.setEnabled(False)
-            self.use_single_accel = False
+            self.use_single_accel = True   # Solo canal ai0 activo
             self.status_label.setText("Modo: Barrido de frecuencia (identificación de inercia)")
         elif index == 1:  # Triangular
             self.experiment_mode = "TRIANGLE"
             self.velocity_spin.setEnabled(True)
             self.rpm_husillo_spin.setEnabled(False)
             self.rpm_avance_spin.setEnabled(False)
-            self.use_single_accel = False
+            self.use_single_accel = True   # Solo canal ai0 activo
             self.status_label.setText("Modo: Onda triangular (caracterización de fricción)")
         else:  # Fuerza de Corte
             self.experiment_mode = "CUTTING"
             self.velocity_spin.setEnabled(False)
             self.rpm_husillo_spin.setEnabled(True)
             self.rpm_avance_spin.setEnabled(True)
-            self.use_single_accel = True  # Solo usar acelerómetro canal 0
-            self.status_label.setText("🔪 Modo: FUERZA DE CORTE - Solo acelerómetro ai0 (bancada)")
-    
+            self.use_single_accel = True
+            self.status_label.setText("🔪 Modo: FUERZA DE CORTE - usando solo acelerómetro ai0 + fuerza ai0")
+
     def _on_filter_changed(self):
         """Callback cuando cambian los parámetros del filtro"""
         filter_type = self.filter_type_combo.currentIndex()
@@ -1032,13 +1161,23 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         
         # Iniciar timer
         self.update_timer.start(50)  # 20 Hz
-        
+
+        # Iniciar UDP a Jetson si está habilitado
+        if self.udp_enabled_cb.isChecked():
+            jetson_ip = self.jetson_ip_edit.text().strip() or "192.168.137.164"
+            udp_port = self.udp_port_spin.value()
+            self.udp_sender = UDPSenderThread(jetson_ip, udp_port)
+            self.udp_sender.start()
+            status_msg = f"⏺️ Adquiriendo + UDP → {jetson_ip}:{udp_port}..."
+        else:
+            status_msg = "⏺️ Adquiriendo..."
+
         self.acquiring = True
         self.start_btn.setText("⏹️ Detener Adquisición")
         self.start_btn.setStyleSheet("background-color: #e74c3c; color: white; font-size: 14px; font-weight: bold; padding: 10px;")
         self.capture_btn.setEnabled(True)
-        self.status_label.setText("⏺️ Adquiriendo...")
-        
+        self.status_label.setText(status_msg)
+
     def stop_acquisition(self):
         self.acquiring = False
         self.update_timer.stop()
@@ -1049,7 +1188,13 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         if self.accel_thread:
             self.accel_thread.stop()
             self.accel_thread.join(timeout=2)
-            
+
+        # Detener UDP sender
+        if self.udp_sender:
+            self.udp_sender.stop()
+            self.udp_sender.join(timeout=2)
+            self.udp_sender = None
+
         self.start_btn.setText("▶️ Iniciar Adquisición")
         self.start_btn.setStyleSheet("background-color: #27ae60; color: white; font-size: 14px; font-weight: bold; padding: 10px;")
         
@@ -1059,39 +1204,49 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         
     def update_plots(self):
         """Actualiza gráficas en tiempo real"""
-        # Procesar datos de fuerza
+        # Procesar datos de fuerza (guardar último chunk para UDP)
+        last_force_chunk = None
         while not force_queue.empty():
             try:
                 data = force_queue.get_nowait()
                 self.force_buffer.extend(data)
                 self.all_force_data.extend(data)
-            except:
+                last_force_chunk = data
+            except Exception:
                 break
-                
+
         # Procesar datos de aceleración (2 canales)
+        last_accel_chunk = None
         while not accel_queue.empty():
             try:
                 data = accel_queue.get_nowait()
                 # data tiene shape (2, samples_per_read)
                 if data.ndim == 2 and data.shape[0] == 2:
                     self.accel_buffer_0.extend(data[0])  # Bancada
-                    self.accel_buffer_1.extend(data[1])  # Sobre sensor
+                    self.accel_buffer_1.extend(data[1])  # Pieza
                     self.all_accel_data_0.extend(data[0])
                     self.all_accel_data_1.extend(data[1])
+                    last_accel_chunk = data[0]  # Bancada para UDP
                 else:
                     # Fallback si solo hay 1 canal
-                    self.accel_buffer_0.extend(data.flatten())
-                    self.accel_buffer_1.extend(data.flatten())
-                    self.all_accel_data_0.extend(data.flatten())
-                    self.all_accel_data_1.extend(data.flatten())
-            except:
+                    flat = data.flatten()
+                    self.accel_buffer_0.extend(flat)
+                    self.accel_buffer_1.extend(flat)
+                    self.all_accel_data_0.extend(flat)
+                    self.all_accel_data_1.extend(flat)
+                    last_accel_chunk = flat
+            except Exception:
                 break
+
+        # Enviar último bloque vía UDP a la Jetson
+        if self.udp_sender and last_force_chunk is not None and last_accel_chunk is not None:
+            self.udp_sender.send(last_force_chunk, last_accel_chunk)
                 
         # Actualizar gráficas si hay datos
         if len(self.force_buffer) > 10 and len(self.accel_buffer_0) > 10:
             force_arr_raw = np.array(self.force_buffer)
             accel_arr_0_raw = np.array(self.accel_buffer_0)  # Bancada
-            accel_arr_1_raw = np.array(self.accel_buffer_1)  # Sobre sensor
+            accel_arr_1_raw = np.array(self.accel_buffer_1)  # Pieza
             
             n = min(len(force_arr_raw), len(accel_arr_0_raw), len(accel_arr_1_raw))
             force_arr_raw = force_arr_raw[-n:]
@@ -1128,8 +1283,8 @@ class CaracterizacionFuerzaGUI(QMainWindow):
                 self.accel_curve_1.setData([], [])  # Ocultar canal 1
                 accel_for_analysis = accel_arr_0  # Usar bancada para análisis
             else:
-                self.accel_curve_1.setData(t, accel_arr_1)  # Sobre sensor (nueva curva)
-                accel_for_analysis = accel_arr_1  # Usar sensor para análisis
+                self.accel_curve_1.setData(t, accel_arr_1)  # Pieza
+                accel_for_analysis = accel_arr_1  # Usar pieza para análisis
             
             # Superposición normalizada
             if np.std(force_arr) > 1e-6 and np.std(accel_for_analysis) > 1e-6:
@@ -1481,7 +1636,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             
         force_arr = np.array(self.all_force_data)
         accel_arr_0 = np.array(self.all_accel_data_0)  # Bancada
-        accel_arr_1 = np.array(self.all_accel_data_1)  # Sobre sensor
+        accel_arr_1 = np.array(self.all_accel_data_1)  # Pieza
         
         # Calcular métricas
         freq = self.freq_spin.value()
@@ -1490,7 +1645,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         force_rms_V = np.sqrt(np.mean(force_arr**2))
         force_rms_N = voltaje_a_fuerza_N(force_rms_V)
         
-        # Usar acelerómetro sobre sensor para F=ma
+        # Usar acelerómetro en pieza para F=ma
         accel_rms_g = np.sqrt(np.mean(accel_arr_1**2))
         accel_rms_ms2 = accel_rms_g * 9.81
         
@@ -1501,7 +1656,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         F_calculada = masa * accel_rms_ms2
         error_pct = abs(force_rms_N - F_calculada) / force_rms_N * 100 if force_rms_N > 0.001 else 0
         
-        # Calcular fase (usar acelerómetro sobre sensor)
+        # Calcular fase (usar acelerómetro en pieza)
         n = min(len(force_arr), len(accel_arr_1))
         freqs = fftfreq(n, 1/FORCE_SAMPLE_RATE)[:n//2]
         fft_force = fft(force_arr[:n] - np.mean(force_arr[:n]))[:n//2]
@@ -1600,7 +1755,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             'force_rms_N': force_rms_N,
             'accel_rms_ms2': accel_rms_ms2,
             'accel0_rms_g': accel0_rms,  # Bancada
-            'accel1_rms_g': accel_rms_g,  # Sobre sensor
+            'accel1_rms_g': accel_rms_g,  # Pieza
             'transmisibilidad': transmisibilidad,
             'F_calculada': F_calculada,
             'error_pct': error_pct,
@@ -1621,7 +1776,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             'notas': self.notas_edit.text(),
             'force_data': force_arr.copy(),
             'accel_data_0': accel_arr_0.copy(),  # Bancada
-            'accel_data_1': accel_arr_1.copy(),  # Sobre sensor
+            'accel_data_1': accel_arr_1.copy(),  # Pieza
             'timestamp': datetime.now().strftime('%Y%m%d_%H%M%S')
         }
         self.experimentos.append(exp)
@@ -1693,13 +1848,23 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         n = min(len(force_arr), len(accel_arr_0), len(accel_arr_1))
         t = np.arange(n) / FORCE_SAMPLE_RATE
         
-        # Crear DataFrame con datos crudos - 2 CANALES DE ACELERACIÓN
-        df = pd.DataFrame({
-            'tiempo_s': t,
-            'fuerza_V': force_arr[:n],
-            'aceleracion_prensa_g': accel_arr_0[:n],  # ai0 = Prensa
-            'aceleracion_pieza_g': accel_arr_1[:n]    # ai1 = Pieza
-        })
+        # Crear DataFrame con datos crudos.
+        # En modo corte se guarda formato compatible con diciembre 2025:
+        # tiempo_s, fuerza_V, aceleracion_sensor_g
+        if self.use_single_accel:
+            df = pd.DataFrame({
+                'tiempo_s': t,
+                'fuerza_V': force_arr[:n],
+                'aceleracion_sensor_g': accel_arr_0[:n],
+                'aceleracion_bancada_g': accel_arr_0[:n]
+            })
+        else:
+            df = pd.DataFrame({
+                'tiempo_s': t,
+                'fuerza_V': force_arr[:n],
+                'aceleracion_bancada_g': accel_arr_0[:n],  # ai0 = Bancada
+                'aceleracion_pieza_g': accel_arr_1[:n]    # ai1 = Pieza
+            })
         
         # Nombre del archivo
         filename = f"corte_{timestamp}.csv"
@@ -1741,7 +1906,7 @@ if __name__ == "__main__":
     print("🔬 CARACTERIZACIÓN SENSOR DE FUERZA DYMH-105")
     print("="*60)
     print(f"   Fuerza: Canal ai0 (datos crudos en V)")
-    print(f"   Acelerómetro: Canal ai0 (datos en g)")
+    print(f"   Acelerómetro: ai0 bancada (datos en g)")
     print(f"   Sample Rate: {FORCE_SAMPLE_RATE} Hz")
     print(f"   Datos en: {DATOS_DIR}")
     print("="*60)

@@ -18,6 +18,12 @@ Uso:
 import sys
 import os
 import time
+
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 import struct
 import socket
 import queue
