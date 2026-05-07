@@ -544,7 +544,15 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         self.rpm_avance_spin.setValue(20)
         self.rpm_avance_spin.setEnabled(False)
         config_layout.addWidget(self.rpm_avance_spin, 2, 3)
-        
+
+        # Condición del cortador
+        config_layout.addWidget(QLabel("🔪 Condición cortador:"), 2, 4)
+        self.cutter_condition_combo = QComboBox()
+        self.cutter_condition_combo.addItems(["Nuevo", "Medio uso", "Desgastado"])
+        self.cutter_condition_combo.setToolTip("Estado del cortador: afecta la histéresis y el desgaste")
+        self.cutter_condition_combo.setEnabled(False)  # Solo en modo corte
+        config_layout.addWidget(self.cutter_condition_combo, 2, 5)
+
         # Notas
         config_layout.addWidget(QLabel("Notas:"), 1, 4)
         self.notas_edit = QLineEdit()
@@ -943,22 +951,25 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             self.velocity_spin.setEnabled(False)
             self.rpm_husillo_spin.setEnabled(False)
             self.rpm_avance_spin.setEnabled(False)
+            self.cutter_condition_combo.setEnabled(False)
             self.use_single_accel = True   # Solo canal ai0 activo
-            self.status_label.setText("Modo: Barrido de frecuencia (identificación de inercia)")
+            self.status_label.setText("Modo: Barrido de frecuencia (identificacion de inercia)")
         elif index == 1:  # Triangular
             self.experiment_mode = "TRIANGLE"
             self.velocity_spin.setEnabled(True)
             self.rpm_husillo_spin.setEnabled(False)
             self.rpm_avance_spin.setEnabled(False)
+            self.cutter_condition_combo.setEnabled(False)
             self.use_single_accel = True   # Solo canal ai0 activo
-            self.status_label.setText("Modo: Onda triangular (caracterización de fricción)")
+            self.status_label.setText("Modo: Onda triangular (caracterizacion de friccion)")
         else:  # Fuerza de Corte
             self.experiment_mode = "CUTTING"
             self.velocity_spin.setEnabled(False)
             self.rpm_husillo_spin.setEnabled(True)
             self.rpm_avance_spin.setEnabled(True)
+            self.cutter_condition_combo.setEnabled(True)
             self.use_single_accel = True
-            self.status_label.setText("🔪 Modo: FUERZA DE CORTE - usando solo acelerómetro ai0 + fuerza ai0")
+            self.status_label.setText("🔪 Modo: FUERZA DE CORTE - usando solo acelerometro ai0 + fuerza ai0")
 
     def _on_filter_changed(self):
         """Callback cuando cambian los parámetros del filtro"""
@@ -1746,7 +1757,8 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         # Parámetros de corte (modo CUTTING)
         rpm_husillo = self.rpm_husillo_spin.value() if self.experiment_mode == "CUTTING" else 0
         rpm_avance = self.rpm_avance_spin.value() if self.experiment_mode == "CUTTING" else 0
-        
+        cutter_condition = self.cutter_condition_combo.currentText() if self.experiment_mode == "CUTTING" else "N/A"
+
         # Guardar experimento (con ambos acelerómetros)
         exp = {
             'experiment_type': self.experiment_mode,
@@ -1773,6 +1785,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             # Parámetros de corte (modo CUTTING)
             'rpm_husillo': rpm_husillo,
             'rpm_avance_x': rpm_avance,
+            'cutter_condition': cutter_condition,
             'notas': self.notas_edit.text(),
             'force_data': force_arr.copy(),
             'accel_data_0': accel_arr_0.copy(),  # Bancada
@@ -1866,19 +1879,41 @@ class CaracterizacionFuerzaGUI(QMainWindow):
                 'aceleracion_pieza_g': accel_arr_1[:n]    # ai1 = Pieza
             })
         
-        # Nombre del archivo
-        filename = f"corte_{timestamp}.csv"
+        # Nombre del archivo (incluye condición del cortador)
+        cutter_cond = self.cutter_condition_combo.currentText().lower().replace(" ", "_") if self.experiment_mode == "CUTTING" else "general"
+        rpm_str = f"_{self.rpm_husillo_spin.value()}rpm" if self.experiment_mode == "CUTTING" else ""
+        filename = f"corte_{timestamp}{rpm_str}_{cutter_cond}.csv"
         filepath = os.path.join(DATOS_DIR, filename)
-        
+
         df.to_csv(filepath, index=False, sep='\t')
-        
+
+        # Guardar JSON sidecar con metadatos para la Jetson / Hailo
+        import json as _json
+        sidecar = {
+            'file': filename,
+            'timestamp': timestamp,
+            'fs_hz': FORCE_SAMPLE_RATE,
+            'n_samples': int(n),
+            'duration_s': round(float(n / FORCE_SAMPLE_RATE), 3),
+            'experiment_mode': self.experiment_mode,
+            'cutter_condition': self.cutter_condition_combo.currentText() if self.experiment_mode == "CUTTING" else "N/A",
+            'rpm_husillo': self.rpm_husillo_spin.value() if self.experiment_mode == "CUTTING" else 0,
+            'rpm_avance_x': self.rpm_avance_spin.value() if self.experiment_mode == "CUTTING" else 0,
+            'notas': self.notas_edit.text(),
+            'canal_fuerza': 'ai0 (NI 9205)',
+            'canal_aceleracion': 'ai0 bancada (NI 9234)',
+        }
+        json_path = filepath.replace('.csv', '_meta.json')
+        with open(json_path, 'w', encoding='utf-8') as jf:
+            _json.dump(sidecar, jf, indent=2, ensure_ascii=False)
+
         duration = n / FORCE_SAMPLE_RATE
-        
-        QMessageBox.information(self, "Guardado", 
-            f"Datos guardados:\n{filepath}\n\n"
+
+        QMessageBox.information(self, "Guardado",
+            f"Datos guardados:\n{filepath}\n{json_path}\n\n"
             f"Muestras: {n}\n"
-            f"Duración: {duration:.2f}s")
-        
+            f"Duracion: {duration:.2f}s")
+
         self.status_label.setText(f"💾 Guardado: {filename}")
         
         # Limpiar buffers
