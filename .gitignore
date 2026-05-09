@@ -14,12 +14,19 @@
 !Pruebas/src/remote_monitoring/
 !Pruebas/src/remote_monitoring/*.py
 !Pruebas/src/remote_monitoring/*.cpp
+!Pruebas/src/remote_monitoring/*.m
 !Pruebas/src/remote_monitoring/README.md
 
 !Pruebas/src/remote_monitoring/logs/
 !Pruebas/src/remote_monitoring/logs/cdaq_remote_*.csv
 !Pruebas/src/remote_monitoring/logs/cdaq_remote_*_inference.csv
 !Pruebas/src/remote_monitoring/logs/cdaq_remote_*_cases.jsonl
+
+# Ignorar logs de sesiones de prueba (no del hardware real)
+Pruebas/src/remote_monitoring/logs/cdaq_remote_202605*.csv
+Pruebas/src/remote_monitoring/logs/cdaq_remote_202605*_inference.csv
+Pruebas/src/remote_monitoring/logs/cdaq_remote_202602*.csv
+Pruebas/src/remote_monitoring/logs/cdaq_remote_202602*_inference.csv
 
 # ── Whitelist: caracterizacion (reference) ──
 !Pruebas/src/caracterizacion_sensor_fuerza.py
