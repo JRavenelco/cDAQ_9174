@@ -19,10 +19,18 @@ Uso:
 """
 from __future__ import annotations
 
+import sys
 import argparse
 import math
 import random
 import socket
+import numpy as np
+
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 import time
 
 try:
@@ -119,7 +127,7 @@ def generate_block(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Sender sintético CNC para probar el receiver Jetson")
+    ap = argparse.ArgumentParser(description="Sender sintetico CNC para probar el receiver Jetson")
     ap.add_argument("--jetson-ip", default="192.168.137.2",
                     help="IP del Jetson (receiver)")
     ap.add_argument("--port", type=int, default=DATA_PORT,
@@ -142,12 +150,12 @@ def main() -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     dest = (args.jetson_ip, args.port)
 
-    print(f"Sender sintético CNC")
+    print(f"Sender sintetico CNC")
     print(f"  Destino : {args.jetson_ip}:{args.port}")
     print(f"  Modo    : {args.mode}")
     print(f"  RPM     : {args.rpm}")
     print(f"  Filos   : {args.n_flutes}")
-    print(f"  Dur.    : {'∞' if args.duration == 0 else f'{args.duration}s'}")
+    print(f"  Dur.    : {'inf' if args.duration == 0 else f'{args.duration}s'}")
     print()
 
     seq = 0
@@ -175,7 +183,9 @@ def main() -> int:
 
             # Generar bloque
             force, accel = generate_block(t_sim, current_mode, args.rpm, args.n_flutes)
-            pkt = pack_data(seq, t_sim, float(FS_HZ), force, accel)
+            pkt = pack_data(seq, t_sim, float(FS_HZ),
+                           np.asarray(force, dtype=np.float32),
+                           np.asarray(accel, dtype=np.float32))
             sock.sendto(pkt, dest)
 
             seq += 1
