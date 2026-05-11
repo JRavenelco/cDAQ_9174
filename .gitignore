@@ -45,6 +45,8 @@ Pruebas/src/remote_monitoring/logs/cdaq_remote_202602*_inference.csv
 
 # ── Tesis doctoral y análisis Gemini ──
 !analizar_tesis.py
+!analizar_proyecto.py
+!DOE_DESGASTE_CORTADOR_FINAL.md
 !resultado_*.txt
 !TESIS DOCTORAL 2025 SANTANA-RAMIREZ.docx
 !Capitulo4_Resultados_Extendido.md

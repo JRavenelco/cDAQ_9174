@@ -1,0 +1,154 @@
+Aquí se presenta un Diseño de Experimentos (DOE) completo y ejecutable para validar la capacidad del índice de histéresis H para detectar el desgaste del cortador en fresado CNC, sentando las bases para el modelo predictivo de la tesis.
+
+---
+
+## 1. OBJETIVO DEL EXPERIMENTO
+
+Validar que el índice de histéresis H, calculado a partir de la fuerza de corte y la velocidad reconstruida de vibraciones, es un indicador robusto y sensible del desgaste del cortador en operaciones de fresado CNC, proporcionando así una variable clave para el modelo predictivo de histéresis basado en CBR.
+
+## 2. FACTORES Y NIVELES
+
+| Factor | Símbolo | Niveles | Unidad | Justificación |
+| :---------------------- | :------ | :------------------------------------------------------------------ | :------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Desgaste del cortador (Flank wear)** | $VB$ | 1. Nuevo (VB < 0.05 mm) <br> 2. Moderado (VB = 0.20 $\pm$ 0.03 mm) <br> 3. Severo (VB = 0.40 $\pm$ 0.03 mm) | mm | Variable primaria que se busca detectar y cuantificar su impacto en la histéresis. Estos niveles cubren el rango de vida útil del cortador. |
+| **Velocidad de husillo** | $N$ | 1. 3000 <br> 2. 4500 | RPM | Influencia significativa en las fuerzas de corte, el régimen de vibración y el mecanismo de desgaste. El nivel 3720 RPM es un punto de referencia previo. |
+| **Avance por diente** | $f_z$ | 1. 0.05 <br> 2. 0.10 | mm/diente | Afecta directamente el espesor de viruta, la magnitud de la fuerza de corte y, por ende, las vibraciones y la histéresis. |
+| **Profundidad de corte radial (ap)** | $a_p$ | 1. 1.0 <br> 2. 2.0 | mm | Impacta el volumen de material removido por unidad de tiempo y las condiciones de carga en la herramienta, influyendo en las fuerzas y el desgaste. |
+| **Material de trabajo** | | Aluminio 6061-T6 | - | Material de referencia utilizado en resultados previos. |
+| **Tipo de herramienta** | | Fresa de 2 dientes (Ø10-12mm) | - | Herramienta descrita en el contexto. |
+
+## 3. VARIABLES DE RESPUESTA
+
+| Variable | Símbolo | Cómo se calcula | Instrumento/Método |
+| :------------------------------------------------ | :------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Índice de Histéresis** | $H$ | $H = \frac{\tilde{E}_{\text{loop}}}{\tilde{W}_{\text{loop}} \cdot \text{ptp}(\tilde{F})}$, donde $\tilde{F}$ y $\tilde{v}$ se obtienen de la fuerza medida y la velocidad integrada (y normalizada) de la aceleración. | NI 9205 (fuerza), NI 9234 (aceleración), software de post-procesamiento (Python). |
+| **Coeficiente de correlación F vs Envolvente aceleración** | $r(F,E)$ | Correlación de Pearson entre la señal de fuerza y la envolvente (RMS o Hilbert) de la señal de aceleración, ambos sincronizados y filtrados. | NI 9205 (fuerza), NI 9234 (aceleración), software de post-procesamiento (Python). |
+| **Parámetros del modelo Bouc-Wen** | $A, \beta, \gamma$ | Identificados por ajuste del modelo Bouc-Wen a los lazos $F$ vs $\tilde{v}$ usando optimización por evolución diferencial. | Software de post-procesamiento (Python con DE). |
+| **Error de predicción CBR del Índice H** | $E_{CBR\_H}$ | $|H_{\text{predicho}} - H_{\text{medido}}| / H_{\text{medido}}$, donde $H_{\text{predicho}}$ se obtiene de la base de casos CBR con los parámetros de corte y VB. (Se calcula *a posteriori* una vez entrenado el CBR). | Software de post-procesamiento (Python/CBR algorithm). |
+| **Fuerza de corte media** | $\bar{F}$ | Media de la fuerza de corte durante la fase estable del proceso de fresado. | NI 9205 (fuerza), software de post-procesamiento. |
+| **RMS de la aceleración de vibración** | $a_{RMS}$ | Valor cuadrático medio de la señal de aceleración durante el corte. | NI 9234 (aceleración), software de post-procesamiento. |
+
+## 4. DISEÑO SELECCIONADO
+
+Se utilizará un **Diseño Factorial Completo** de $3 \times 2 \times 2 \times 2$.
+
+*   **Factores:** 4 factores (Desgaste $VB$, Velocidad $N$, Avance $f_z$, Profundidad $a_p$).
+*   **Niveles:** $VB$ (3 niveles), $N$ (2 niveles), $f_z$ (2 niveles), $a_p$ (2 niveles).
+*   **Número total de corridas:** $3 \times 2 \times 2 \times 2 = 24$ corridas experimentales.
+*   **Replicaciones:** Se realizará **una única replicación** por cada combinación de factores para el estudio inicial. Si el tiempo lo permite y la variabilidad es alta, se considerarán replicaciones adicionales.
+
+**Justificación:** Un diseño factorial completo permite evaluar de forma eficiente los efectos principales de cada factor y todas las interacciones posibles entre ellos. Esto es crucial para entender cómo el desgaste interactúa con los parámetros de corte y afecta el índice de histéresis. Con 24 corridas, el experimento es manejable y proporciona una cantidad sustancial de información.
+
+### Tabla de Corridas (Esquema)
+
+El experimento constará de 24 corridas, cubriendo sistemáticamente todas las combinaciones de los niveles de los factores. Un ejemplo de las primeras corridas sería:
+
+| Corrida # | VB (mm) | N (RPM) | $f_z$ (mm/diente) | $a_p$ (mm) |
+| :-------- | :------ | :------ | :---------------- | :--------- |
+| 1         | Nuevo   | 3000    | 0.05              | 1.0        |
+| 2         | Nuevo   | 3000    | 0.05              | 2.0        |
+| 3         | Nuevo   | 3000    | 0.10              | 1.0        |
+| ...       | ...     | ...     | ...               | ...        |
+| 24        | Severo  | 4500    | 0.10              | 2.0        |
+
+## 5. PROTOCOLO PASO A PASO
+
+**Preparación Inicial:**
+
+1.  **Montaje del Hardware:**
+    *   Montar la fresadora CNC en una base rígida.
+    *   Fijar la celda de carga DYMH-105 (500kg) en la mesa de la fresadora, asegurando que la pieza a mecanizar quede rígidamente montada sobre ella.
+    *   Conectar el acondicionador INA849 (G=601) a la celda de carga.
+    *   Conectar la salida analógica del acondicionador INA849 a un canal diferencial (ej. ai0) del módulo NI 9205 en el chasis NI cDAQ-9174. **Nota crítica:** Asumiendo que el acondicionador INA849 proporciona una salida de voltaje adecuada para el NI 9205 (ej. $\pm$10V) y permite una tasa de muestreo de 2.5 kHz. Si la fuerza dinámica se tomara con el NI 9219 (100 S/s), sería insuficiente para el análisis de histéresis en fresado.
+    *   Montar el acelerómetro PCB 352C33 lo más cerca posible de la zona de corte (ej. en el portaherramientas o en la pieza) y conectarlo a un canal IEPE (ej. ch0) del módulo NI 9234.
+    *   Conectar el NI cDAQ-9174 al PC con el software de adquisición.
+2.  **Calibración y Verificación:**
+    *   Calibrar la celda de carga: Usar masas conocidas para obtener la curva de calibración (Voltaje vs Fuerza) para el sistema DYMH-105 + INA849 + NI 9205. Verificar linealidad y offset.
+    *   Verificar el acelerómetro: Aunque se conoce la sensibilidad (100mV/g), realizar una prueba de impacto o excitación con el shaker (TIRA TV 51144IN) para verificar la respuesta y la ausencia de ruido excesivo.
+    *   Asegurar la sincronización temporal entre los canales de fuerza (NI 9205) y aceleración (NI 9234) en el cDAQ.
+
+**Generación Controlada del Desgaste (VB):**
+
+3.  **Preparación de Herramientas:**
+    *   Comenzar con un **cortador nuevo** (VB < 0.05 mm). Realizar las 8 corridas del DOE correspondientes a este nivel de desgaste.
+    *   **Generación de desgaste moderado:** Tras las 8 corridas con herramienta nueva, realizar una secuencia de pasadas de pre-desgaste (ej. fresado continuo a parámetros intermedios, 3720 RPM, $f_z$=0.07, $a_p$=1.5mm, durante ~5-10 minutos).
+    *   **Medición de VB:** Retirar el cortador y medir el desgaste del flanco (VB) utilizando un microscopio óptico o digital calibrado. Registrar la medición. Repetir las pasadas de pre-desgaste y la medición hasta alcanzar el nivel deseado de $VB$ (0.20 $\pm$ 0.03 mm).
+    *   Realizar las 8 corridas del DOE correspondientes a este nivel de desgaste moderado.
+    *   **Generación de desgaste severo:** Repetir el proceso de pre-desgaste y medición hasta alcanzar el nivel de $VB$ (0.40 $\pm$ 0.03 mm).
+    *   Realizar las 8 corridas del DOE correspondientes a este nivel de desgaste severo.
+
+**Ejecución de las Corridas Experimentales (para cada nivel de VB):**
+
+4.  **Configuración de la Fresadora CNC:**
+    *   Cargar el programa NC para cada corrida con los parámetros $N$, $f_z$, $a_p$ especificados en la tabla del DOE.
+    *   Asegurar la sujeción de la pieza de Aluminio 6061-T6.
+    *   Utilizar fresado en concordancia (down milling) para todas las corridas.
+    *   Para cada corrida, realizar un corte de al menos 10 segundos de duración, asegurando que el proceso de corte sea estable.
+
+5.  **Adquisición de Datos:**
+    *   Utilizar la interfaz desarrollada `caracterizacion_sensor_fuerza.py`.
+    *   Configurar los canales:
+        *   `ai0` (NI 9205): Señal de fuerza (salida del acondicionador INA849). Tasa de muestreo: 2.5 kHz.
+        *   `ch0` (NI 9234): Señal de aceleración (PCB 352C33). Tasa de muestreo: 51.2 kS/s.
+    *   **Antes de cada corte:** Iniciar la adquisición de datos (capturando ~2-3 segundos de reposo para establecer la línea base).
+    *   **Durante el corte:** Registrar la fuerza y la aceleración.
+    *   **Después del corte:** Detener la adquisición (~2-3 segundos después de finalizar el corte).
+    *   **Guardado de Datos:** La interfaz debe guardar automáticamente un archivo CSV por corrida con los siguientes datos:
+        *   Señales de fuerza y aceleración en bruto (tiempo, F, A).
+        *   Metadatos en el encabezado o un archivo `_meta.json` asociado: Fecha, hora, ID de corrida, $VB$ medido (mm), $N$ (RPM), $f_z$ (mm/diente), $a_p$ (mm), identificador del cortador, comentarios.
+        *   Los resultados de validación de datos (NaN/Inf, tiempos monótonos, outliers) para cada sesión.
+
+**Post-procesamiento y Análisis:**
+
+6.  **Pre-procesamiento de Señales:**
+    *   Filtrado: Aplicar filtros paso-alto (para eliminar drift en fuerza y aceleración) y paso-bajo (para anti-aliasing y ruido de alta frecuencia).
+    *   Integración de aceleración: Integrar la señal de aceleración para obtener la velocidad (v). Se debe prestar especial atención al manejo del offset y el drift durante la integración (ej. filtrado de banda adecuado).
+    *   Normalización z-score: Normalizar las señales de fuerza y velocidad para obtener $\tilde{F}$ y $\tilde{v}$ según lo requerido para el índice H.
+
+7.  **Cálculo de Variables de Respuesta:**
+    *   Para cada corrida, calcular:
+        *   El **Índice de Histéresis H** a partir de los lazos $\tilde{F}$ vs $\tilde{v}$.
+        *   El **coeficiente de correlación $r(F,E)$**.
+        *   Los **parámetros Bouc-Wen (A, $\beta$, $\gamma$)** ajustando el modelo a los datos $F$ vs $\tilde{v}$.
+        *   La **fuerza de corte media** ($\bar{F}$).
+        *   El **RMS de la aceleración** ($a_{RMS}$).
+
+## 6. HIPÓTESIS ESTADÍSTICA TESTABLE
+
+*   **Hipótesis Nula (H0):** El desgaste del cortador ($VB$) no tiene un efecto estadísticamente significativo sobre el índice de histéresis ($H$), ni sobre los parámetros del modelo Bouc-Wen ($A, \beta, \gamma$).
+*   **Hipótesis Alternativa (H1):** El desgaste del cortador ($VB$) tiene un efecto estadísticamente significativo sobre el índice de histéresis ($H$) y/o sobre los parámetros del modelo Bouc-Wen ($A, \beta, \gamma$). Específicamente, se espera que el índice $H$ aumente progresivamente con el desgaste del cortador, reflejando una mayor disipación de energía debida a la fricción en el flanco.
+
+**Umbral de significancia:** $\alpha = 0.05$.
+
+**Ejemplo concreto:** Se espera que el índice de histéresis $H$ para un cortador con desgaste severo ($VB=0.40$ mm) sea, en promedio, al menos un 30% mayor que para un cortador nuevo ($VB<0.05$ mm), y que esta diferencia sea estadísticamente significativa (valor p < 0.05). Además, se espera que el parámetro $\beta$ de Bouc-Wen (relacionado con el endurecimiento de la histéresis) aumente con el $VB$.
+
+## 7. ANÁLISIS ESTADÍSTICO
+
+1.  **Análisis de Varianza (ANOVA):**
+    *   Se realizará un ANOVA multifactorial para cada variable de respuesta (H, $r(F,E)$, A, $\beta$, $\gamma$, $\bar{F}$, $a_{RMS}$) para determinar la significancia estadística de los efectos principales de $VB$, $N$, $f_z$, $a_p$ y sus interacciones.
+    *   Se prestará especial atención a la significancia del factor $VB$ y a sus interacciones con los demás parámetros de corte.
+    *   **Herramienta:** Python (bibliotecas `scipy.stats` para ANOVA o `statsmodels` para modelos lineales generalizados), o software estadístico como Minitab, R, JMP.
+2.  **Análisis de Regresión:**
+    *   Se ajustarán modelos de regresión para predecir $H$ y los parámetros Bouc-Wen en función de los factores y sus interacciones.
+3.  **Análisis de Efectos Principales e Interacciones:**
+    *   Se generarán gráficos de efectos principales y gráficos de interacción para visualizar cómo cada factor y sus combinaciones afectan las variables de respuesta.
+4.  **Análisis de Normalidad y Homocedasticidad:**
+    *   Se verificarán los supuestos de normalidad de los residuos y homocedasticidad para asegurar la validez del ANOVA.
+5.  **Cálculo del Error de Predicción CBR:**
+    *   Una vez que se haya construido la base de casos CBR con los datos de este DOE, se utilizarán técnicas de validación cruzada para simular predicciones y calcular el error de predicción $E_{CBR\_H}$ del índice H en casos no vistos.
+
+## 8. CONEXIÓN CON LA TESIS
+
+Estos resultados experimentales son cruciales para validar la hipótesis central de la tesis: que un modelo predictivo de histéresis puede diagnosticar el estado del cortador.
+
+1.  **Validación de H como indicador de desgaste:** La demostración de una correlación estadísticamente significativa entre el índice H (y/o los parámetros de Bouc-Wen) y el $VB$ del cortador confirmará la utilidad de estas métricas para la detección de desgaste. Esto aborda directamente la necesidad de un "modelo predictivo de histéresis" y la base para el diagnóstico de la herramienta.
+2.  **Base de Casos para CBR:** Los 24 conjuntos de datos adquiridos, junto con sus respectivos $VB$ y parámetros de corte, formarán la base de casos inicial para el sistema de Razonamiento Basado en Casos (CBR). Cada corrida exitosa con sus variables de respuesta calculadas se convertirá en un "caso" en la base de datos, que el CBR utilizará para encontrar similitudes y predecir el comportamiento de histéresis o el estado de desgaste en nuevas situaciones.
+3.  **Alimentación del Modelo PINN:** Los datos de fuerza y velocidad para diferentes estados de desgaste servirán como entrada para el entrenamiento y la validación del modelo KAN-PINN ($F = m·a + k·x + c·v + α·k·E + (1-α)·k·z$) y del modelo PINN genérico, permitiendo verificar si la arquitectura propuesta puede modelar el comportamiento histerético influenciado por el desgaste.
+4.  **Capítulo 4. Resultados:**
+    *   **Figura 4.X: Evolución del Índice de Histéresis (H) con el Desgaste del Cortador (VB).** Mostrará gráficos de barra o de línea con H para cada nivel de VB, posiblemente desagregado por los otros factores.
+    *   **Figura 4.Y: Lazos F-v para diferentes estados de desgaste.** Comparará visualmente los diagramas de Lissajous (Fuerza vs Velocidad) para un cortador nuevo, moderado y severo bajo condiciones de corte idénticas, ilustrando el cambio en la forma del lazo histerético.
+    *   **Tabla 4.Z: Parámetros Bouc-Wen identificados en función de VB y parámetros de corte.** Demostrará cómo $A, \beta, \gamma$ varían sistemáticamente con el desgaste.
+    *   **Figura 4.W: Efectos Principales e Interacciones sobre H.** Mostrará los resultados del ANOVA para H.
+    *   **Sección 4.5. Modelo Predictivo de Histéresis (CBR):** Se presentarán los resultados iniciales del rendimiento del CBR utilizando esta base de casos, incluyendo el error de predicción del índice H.
+
+Este DOE proporcionará la evidencia empírica necesaria para justificar la integración del índice H en el modelo predictivo de histéresis y su uso para el monitoreo del desgaste de la herramienta en fresado CNC.
