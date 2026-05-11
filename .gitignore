@@ -43,6 +43,37 @@ Pruebas/src/remote_monitoring/logs/cdaq_remote_202602*_inference.csv
 !levitador-python/pinn/
 !levitador-python/pinn/*.py
 
+# ── Tesis doctoral y análisis Gemini ──
+!analizar_tesis.py
+!resultado_*.txt
+!TESIS DOCTORAL 2025 SANTANA-RAMIREZ.docx
+!Capitulo4_Resultados_Extendido.md
+!GUIA_PROYECTO_IA.md
+!Reporte_Noviembre_2024.md
+
+# ── Reportes técnicos de diciembre ──
+!Pruebas/README_RECONSTRUCCION_20251210.md
+!Pruebas/Plan_Estructura_Semestral.md
+!Pruebas/src/caracterizacion_fuerza/
+!Pruebas/src/caracterizacion_fuerza/INFORME_HISTERESIS_FRESADO.md
+!Pruebas/src/caracterizacion_fuerza/REPORTE_TECNICO_Caracterizacion_Dinamica.md
+!Pruebas/src/caracterizacion_fuerza/README.md
+!Pruebas/src/caracterizacion_fuerza/resumen_gemini/
+!Pruebas/src/caracterizacion_fuerza/resumen_gemini/RESUMEN_ANALISIS_CORTE_CNC.md
+!Pruebas/src/caracterizacion_fuerza/resumen_gemini/PROMPT_GEMINI.md
+
+# ── Contexto levitador (relevante para tesis) ──
+!levitador valentin/*.md
+!levitador-python/pinn/colab_files/
+!levitador-python/pinn/colab_files/CONTEXTO_COMPLETO_PROYECTO.md
+!levitador-python/pinn/colab_files/INDICE_MAESTRO.md
+!levitador-python/pinn/colab_files/RESUMEN_RAPIDO_1_PAGINA.md
+!levitador-python/pinn/README_BENCHMARK.md
+!levitador-python/pinn/README_KAN_HYBRID.md
+
+# ── Nunca subir credenciales ──
+.env
+
 # ── Always ignore these even if whitelisted ──
 __pycache__/
 *.py[cod]
