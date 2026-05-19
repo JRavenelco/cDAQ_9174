@@ -17,6 +17,14 @@
 !Pruebas/src/remote_monitoring/*.m
 !Pruebas/src/remote_monitoring/README.md
 
+# ── Whitelist: cerebro_digital (n8n + MQTT + InfluxDB) ──
+!Pruebas/src/remote_monitoring/cerebro_digital/
+!Pruebas/src/remote_monitoring/cerebro_digital/*.py
+!Pruebas/src/remote_monitoring/cerebro_digital/*.yml
+!Pruebas/src/remote_monitoring/cerebro_digital/*.md
+!Pruebas/src/remote_monitoring/cerebro_digital/mosquitto/
+!Pruebas/src/remote_monitoring/cerebro_digital/mosquitto/*.conf
+
 !Pruebas/src/remote_monitoring/logs/
 !Pruebas/src/remote_monitoring/logs/cdaq_remote_*.csv
 !Pruebas/src/remote_monitoring/logs/cdaq_remote_*_inference.csv

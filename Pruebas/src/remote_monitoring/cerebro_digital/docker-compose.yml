@@ -1,0 +1,94 @@
+# =============================================================
+# Cerebro Digital — CIDESI TCM  (Jetson Orin NX / ARM64)
+# n8n + Mosquitto MQTT + InfluxDB 2
+#
+# Uso:
+#   cd cerebro_digital
+#   docker compose up -d
+#
+# Acceso:
+#   n8n UI:       http://jetson-ip:5678
+#   Mosquitto:    mqtt://jetson-ip:1883
+#   InfluxDB UI:  http://jetson-ip:8086
+# =============================================================
+
+services:
+  # ── MQTT Broker ──────────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: cerebro-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"    # MQTT
+      - "9001:9001"    # WebSocket (opcional, para debug)
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - cerebro
+
+  # ── InfluxDB 2 (time-series storage) ─────────────────────────
+  influxdb:
+    image: influxdb:2
+    container_name: cerebro-influxdb
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: cidesi
+      DOCKER_INFLUXDB_INIT_PASSWORD: cidesi2026
+      DOCKER_INFLUXDB_INIT_ORG: cidesi
+      DOCKER_INFLUXDB_INIT_BUCKET: tcm
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: cidesi-cerebro-token-2026
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    networks:
+      - cerebro
+
+  # ── n8n (orquestador / cerebro) ──────────────────────────────
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: cerebro-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # Acceso básico
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: cidesi
+      N8N_BASIC_AUTH_PASSWORD: cerebro2026
+      # Webhook URL (para que los templates funcionen)
+      WEBHOOK_URL: http://0.0.0.0:5678/
+      # Python nativo en Code nodes (n8n >= 1.111.0)
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_RUNNERS_MODE: internal
+      N8N_RUNNERS_STDLIB_ALLOW: "json,math,datetime,statistics,collections"
+      N8N_RUNNERS_EXTERNAL_ALLOW: "numpy,scipy,requests"
+      # Zona horaria
+      GENERIC_TIMEZONE: America/Mexico_City
+      TZ: America/Mexico_City
+      # Ejecuciones
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: 168
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - cerebro
+    depends_on:
+      - mosquitto
+      - influxdb
+    # Para acceder a servicios del host (serve_cerebro.py, Ollama)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
+  influxdb_data:
+  n8n_data:
+
+networks:
+  cerebro:
+    driver: bridge
