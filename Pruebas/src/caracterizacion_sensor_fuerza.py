@@ -84,7 +84,7 @@ FORCE_TERMINAL = TerminalConfiguration.DIFF if HAS_NIDAQMX else None
 # NI 9234 - Aceleración (1 CANAL: bancada)
 ACCEL_DEVICE = "cDAQ1Mod2"
 ACCEL_CHANNELS = ["ai0"]  # Solo acelerómetro en bancada
-ACCEL_SAMPLE_RATE = 2500  # Hz
+ACCEL_SAMPLE_RATE = 2000  # Hz
 
 # SIN CALIBRACIÓN - Datos crudos en voltios
 # La fuerza se guardará directamente en V
@@ -223,8 +223,8 @@ class AccelAcquisitionThread(threading.Thread):
         super().__init__(daemon=True)
         self.running = True
         self.task = None
-        self.samples_per_read = 100
-        self.n_channels = len(ACCEL_CHANNELS)  # 2 canales
+        self.samples_per_read = 200
+        self.n_channels = len(ACCEL_CHANNELS)
         
     def run(self):
         if not HAS_NIDAQMX:
@@ -517,7 +517,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         # Tipo de experimento
         config_layout.addWidget(QLabel("Tipo Experimento:"), 1, 0)
         self.exp_type_combo = QComboBox()
-        self.exp_type_combo.addItems(["🔄 Barrido/Chirp (Inercia)", "📐 Triangular (Fricción)", "🔪 Fuerza de Corte (Histéresis)"])
+        self.exp_type_combo.addItems(["🔄 Barrido/Chirp (Inercia)", "📐 Triangular (Fricción)", "🔪 Fuerza de Corte (Histéresis)", "📡 Solo Acelerómetro"])
         self.exp_type_combo.currentIndexChanged.connect(self._on_exp_type_changed)
         config_layout.addWidget(self.exp_type_combo, 1, 1)
         
@@ -794,21 +794,24 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         self.fft_force_plot.addItem(self.fft_force_label)
         splitter.addWidget(self.fft_force_plot)
         
-        # FFT Aceleración (2 canales)
-        self.fft_accel_plot = pg.PlotWidget(title="FFT Aceleración (2 sensores)")
-        self.fft_accel_plot.setLabel('left', 'Magnitud', 'dB')
+        # FFT Aceleración (solo ai0)
+        self.fft_accel_plot = pg.PlotWidget(title=f"FFT Aceleración ai0 (N=4096, Fs={ACCEL_SAMPLE_RATE} Hz)")
+        self.fft_accel_plot.setLabel('left', 'Amplitud', 'g')
         self.fft_accel_plot.setLabel('bottom', 'Frecuencia', 'Hz')
         self.fft_accel_plot.showGrid(x=True, y=True, alpha=0.3)
-        self.fft_accel_curve = self.fft_accel_plot.plot(pen=pg.mkPen('#e74c3c', width=2), name='Bancada (ai0)')
-        self.fft_accel_curve_1 = self.fft_accel_plot.plot(pen=pg.mkPen('#f39c12', width=2), name='Pieza (ai1)')
-        # Etiquetas de frecuencia pico
-        self.fft_accel_label_0 = pg.TextItem(anchor=(0, 1), color='#e74c3c')
-        self.fft_accel_label_0.setFont(QFont('Arial', 11, QFont.Bold))
+        self.fft_accel_plot.setXRange(0, ACCEL_SAMPLE_RATE / 2)
+        self.fft_accel_plot.enableAutoRange(axis='y')
+        self.fft_accel_curve = self.fft_accel_plot.plot(pen=pg.mkPen('#00FF88', width=1.2))
+        self.fft_accel_curve_1 = self.fft_accel_plot.plot(pen=pg.mkPen('#f39c12', width=2))  # unused, kept for compat
+        # Línea vertical de pico
+        self.fft_accel_peak_line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('r', width=1.5, style=QtCore.Qt.DashLine))
+        self.fft_accel_plot.addItem(self.fft_accel_peak_line)
+        # Etiqueta de frecuencia pico
+        self.fft_accel_label_0 = pg.TextItem(anchor=(0, 1), color='#FF4444')
+        self.fft_accel_label_0.setFont(QFont('Arial', 12, QFont.Bold))
         self.fft_accel_plot.addItem(self.fft_accel_label_0)
-        self.fft_accel_label_1 = pg.TextItem(anchor=(0, 0), color='#f39c12')
-        self.fft_accel_label_1.setFont(QFont('Arial', 11, QFont.Bold))
+        self.fft_accel_label_1 = pg.TextItem(anchor=(0, 0), color='#f39c12')  # kept for compat
         self.fft_accel_plot.addItem(self.fft_accel_label_1)
-        self.fft_accel_plot.addLegend()
         splitter.addWidget(self.fft_accel_plot)
         
         # FRF (Aceleración Sensor / Fuerza)
@@ -962,7 +965,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             self.cutter_condition_combo.setEnabled(False)
             self.use_single_accel = True   # Solo canal ai0 activo
             self.status_label.setText("Modo: Onda triangular (caracterizacion de friccion)")
-        else:  # Fuerza de Corte
+        elif index == 2:  # Fuerza de Corte
             self.experiment_mode = "CUTTING"
             self.velocity_spin.setEnabled(False)
             self.rpm_husillo_spin.setEnabled(True)
@@ -970,6 +973,14 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             self.cutter_condition_combo.setEnabled(True)
             self.use_single_accel = True
             self.status_label.setText("🔪 Modo: FUERZA DE CORTE - usando solo acelerometro ai0 + fuerza ai0")
+        else:  # Solo Acelerómetro
+            self.experiment_mode = "ACCEL_ONLY"
+            self.velocity_spin.setEnabled(False)
+            self.rpm_husillo_spin.setEnabled(True)
+            self.rpm_avance_spin.setEnabled(False)
+            self.cutter_condition_combo.setEnabled(False)
+            self.use_single_accel = True
+            self.status_label.setText("📡 Modo: SOLO ACELERÓMETRO - captura vibración sin sensor de fuerza")
 
     def _on_filter_changed(self):
         """Callback cuando cambian los parámetros del filtro"""
@@ -1165,9 +1176,12 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             accel_queue.get()
             
         # Iniciar hilos
-        self.force_thread = ForceAcquisitionThread()
+        if self.experiment_mode != "ACCEL_ONLY":
+            self.force_thread = ForceAcquisitionThread()
+            self.force_thread.start()
+        else:
+            self.force_thread = None
         self.accel_thread = AccelAcquisitionThread()
-        self.force_thread.start()
         self.accel_thread.start()
         
         # Iniciar timer
@@ -1217,14 +1231,15 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         """Actualiza gráficas en tiempo real"""
         # Procesar datos de fuerza (guardar último chunk para UDP)
         last_force_chunk = None
-        while not force_queue.empty():
-            try:
-                data = force_queue.get_nowait()
-                self.force_buffer.extend(data)
-                self.all_force_data.extend(data)
-                last_force_chunk = data
-            except Exception:
-                break
+        if self.experiment_mode != "ACCEL_ONLY":
+            while not force_queue.empty():
+                try:
+                    data = force_queue.get_nowait()
+                    self.force_buffer.extend(data)
+                    self.all_force_data.extend(data)
+                    last_force_chunk = data
+                except Exception:
+                    break
 
         # Procesar datos de aceleración (2 canales)
         last_accel_chunk = None
@@ -1252,6 +1267,63 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         # Enviar último bloque vía UDP a la Jetson
         if self.udp_sender and last_force_chunk is not None and last_accel_chunk is not None:
             self.udp_sender.send(last_force_chunk, last_accel_chunk)
+
+        # ── Modo ACCEL_ONLY: solo graficar acelerómetro ──
+        if self.experiment_mode == "ACCEL_ONLY":
+            if len(self.accel_buffer_0) > 10:
+                accel_arr_0_raw = np.array(self.accel_buffer_0)
+                accel_arr_0, snr_a0 = self.apply_filter(accel_arr_0_raw)
+                n = len(accel_arr_0)
+                t = np.linspace(-n / ACCEL_SAMPLE_RATE, 0, n)
+
+                # Graficar acelerómetro
+                self.accel_curve.setData(t, accel_arr_0)
+                self.accel_curve_1.setData([], [])
+                self.force_curve.setData([], [])
+                self.overlay_force_curve.setData([], [])
+                self.overlay_accel_curve.setData(t, accel_arr_0)
+
+                # Labels de aceleración
+                accel0_g = accel_arr_0[-1]
+                accel0_rms = np.sqrt(np.mean(accel_arr_0**2))
+                self.accel0_g_label.setText(f"Acel: {accel0_g:.4f} g")
+                self.accel0_rms_label.setText(f"RMS: {accel0_rms:.4f} g")
+                rpm = self.rpm_husillo_spin.value()
+                self.force_volt_label.setText(f"RPM: {rpm}")
+                self.force_kg_label.setText("N/A (solo acel)")
+                self.force_N_label.setText("N/A (solo acel)")
+                self.force_rms_label.setText("N/A (solo acel)")
+
+                # SNR
+                if self.filter_enabled_cb.isChecked():
+                    self.filter_snr_label.setText(f"SNR: +{snr_a0:.1f} dB")
+                else:
+                    self.filter_snr_label.setText("SNR: --")
+
+                # FFT solo acelerómetro (estilo interfaz_DAQ_acelerometro)
+                NFFT = 4096
+                if len(self.all_accel_data_0) % 1000 < 200 and n >= NFFT:
+                    data_fft = accel_arr_0[-NFFT:]
+                    data_fft = data_fft - np.mean(data_fft)
+                    window = np.hanning(NFFT)
+                    data_windowed = data_fft * window
+                    yf = fft(data_windowed)
+                    xf = fftfreq(NFFT, 1.0 / ACCEL_SAMPLE_RATE)[:NFFT // 2]
+                    mag = 2.0 / NFFT * np.abs(yf[:NFFT // 2])
+                    mag = mag / np.mean(window) * 2
+                    mask = xf > 2
+                    self.fft_accel_curve.setData(xf[mask], mag[mask])
+                    self.fft_accel_curve_1.setData([], [])
+                    self.fft_force_curve.setData([], [])
+                    if np.any(mask) and np.max(mag[mask]) > 0:
+                        idx_peak = np.argmax(mag[mask])
+                        freq_pico = xf[mask][idx_peak]
+                        amp_pico = mag[mask][idx_peak]
+                        self.fft_accel_peak_line.setPos(freq_pico)
+                        self.fft_accel_label_0.setText(f"Pico: {freq_pico:.1f} Hz ({amp_pico:.4f} g)")
+                        self.fft_accel_label_0.setPos(freq_pico, amp_pico)
+                        self.fft_accel_plot.setTitle(f"FFT Aceleración ai0 — PICO: {freq_pico:.1f} Hz ({amp_pico:.4f} g)")
+            return
                 
         # Actualizar gráficas si hay datos
         if len(self.force_buffer) > 10 and len(self.accel_buffer_0) > 10:
@@ -1373,84 +1445,61 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         self.fma_error_label.setStyleSheet(f"font-weight: bold; color: {color};")
         
     def _update_fft(self, force_arr, accel_arr_0, accel_arr_1):
-        """Actualiza FFT y FRF para 2 acelerómetros"""
-        n = len(force_arr)
-        if n < 256:
+        """Actualiza FFT - solo ai0 con estilo interfaz_DAQ_acelerometro"""
+        NFFT = 4096
+        n = len(accel_arr_0)
+        if n < NFFT:
             return
-            
-        # FFT
-        freqs = fftfreq(n, 1/FORCE_SAMPLE_RATE)[:n//2]
         
-        fft_force = np.abs(fft(force_arr - np.mean(force_arr)))[:n//2]
-        fft_accel_0 = np.abs(fft(accel_arr_0 - np.mean(accel_arr_0)))[:n//2]  # Bancada
-        fft_accel_1 = np.abs(fft(accel_arr_1 - np.mean(accel_arr_1)))[:n//2]  # Sobre sensor
+        # FFT Aceleración ai0 con ventana Hanning (amplitud lineal en g)
+        data_fft = accel_arr_0[-NFFT:]
+        data_fft = data_fft - np.mean(data_fft)
+        window = np.hanning(NFFT)
+        data_windowed = data_fft * window
+        yf = fft(data_windowed)
+        xf = fftfreq(NFFT, 1.0 / ACCEL_SAMPLE_RATE)[:NFFT // 2]
+        mag = 2.0 / NFFT * np.abs(yf[:NFFT // 2])
+        mag = mag / np.mean(window) * 2
         
-        # Convertir a dB
-        fft_force_db = 20 * np.log10(fft_force + 1e-12)
-        fft_accel_0_db = 20 * np.log10(fft_accel_0 + 1e-12)
-        fft_accel_1_db = 20 * np.log10(fft_accel_1 + 1e-12)
+        mask = xf > 2
+        self.fft_accel_curve.setData(xf[mask], mag[mask])
+        self.fft_accel_curve_1.setData([], [])
         
-        self.fft_force_curve.setData(freqs, fft_force_db)
-        self.fft_accel_curve.setData(freqs, fft_accel_0_db)  # Prensa
-        self.fft_accel_curve_1.setData(freqs, fft_accel_1_db)  # Pieza
+        # Pico aceleración
+        if np.any(mask) and np.max(mag[mask]) > 0:
+            idx_peak = np.argmax(mag[mask])
+            freq_pico = xf[mask][idx_peak]
+            amp_pico = mag[mask][idx_peak]
+            self.fft_accel_peak_line.setPos(freq_pico)
+            self.fft_accel_label_0.setText(f"Pico: {freq_pico:.1f} Hz ({amp_pico:.4f} g)")
+            self.fft_accel_label_0.setPos(freq_pico, amp_pico)
+            self.fft_accel_plot.setTitle(f"FFT Aceleración ai0 — PICO: {freq_pico:.1f} Hz ({amp_pico:.4f} g)")
         
-        # Encontrar frecuencias pico (ignorar DC, buscar >5 Hz)
-        mask = freqs > 5
-        if np.any(mask):
-            # Pico Fuerza
-            idx_f = np.argmax(fft_force_db[mask])
-            freq_pico_f = freqs[mask][idx_f]
-            mag_pico_f = fft_force_db[mask][idx_f]
-            self.fft_force_label.setText(f"PICO: {freq_pico_f:.1f} Hz")
-            self.fft_force_label.setPos(freq_pico_f, mag_pico_f)
-            
-            # Pico Prensa (ai0)
-            idx_0 = np.argmax(fft_accel_0_db[mask])
-            freq_pico_0 = freqs[mask][idx_0]
-            mag_pico_0 = fft_accel_0_db[mask][idx_0]
-            self.fft_accel_label_0.setText(f"Prensa: {freq_pico_0:.1f} Hz")
-            self.fft_accel_label_0.setPos(freq_pico_0, mag_pico_0)
-            
-            # Pico Pieza (ai1)
-            idx_1 = np.argmax(fft_accel_1_db[mask])
-            freq_pico_1 = freqs[mask][idx_1]
-            mag_pico_1 = fft_accel_1_db[mask][idx_1]
-            self.fft_accel_label_1.setText(f"Pieza: {freq_pico_1:.1f} Hz")
-            self.fft_accel_label_1.setPos(freq_pico_1, mag_pico_1 - 20)
+        # FFT Fuerza (mantener en dB)
+        n_f = len(force_arr)
+        if n_f >= 256:
+            freqs_f = fftfreq(n_f, 1/FORCE_SAMPLE_RATE)[:n_f//2]
+            fft_force = np.abs(fft(force_arr - np.mean(force_arr)))[:n_f//2]
+            fft_force_db = 20 * np.log10(fft_force + 1e-12)
+            self.fft_force_curve.setData(freqs_f, fft_force_db)
+            mask_f = freqs_f > 5
+            if np.any(mask_f):
+                idx_f = np.argmax(fft_force_db[mask_f])
+                freq_pico_f = freqs_f[mask_f][idx_f]
+                mag_pico_f = fft_force_db[mask_f][idx_f]
+                self.fft_force_label.setText(f"PICO: {freq_pico_f:.1f} Hz")
+                self.fft_force_label.setPos(freq_pico_f, mag_pico_f)
         
-        # FRF (usando acelerómetro sobre sensor)
-        H = fft_accel_1 / (fft_force + 1e-12)
-        H_db = 20 * np.log10(np.abs(H) + 1e-12)
-        self.frf_curve.setData(freqs, H_db)
-        
-        # Transmisibilidad en frecuencia
-        T = fft_accel_1 / (fft_accel_0 + 1e-12)
-        T_db = 20 * np.log10(np.abs(T) + 1e-12)
-        self.transmisibilidad_curve.setData(freqs, T_db)
-        
-        # Análisis de fase
-        idx_peak = np.argmax(fft_force[1:]) + 1
-        freq_dom = freqs[idx_peak]
-        
-        # Fase en la frecuencia dominante (usar acelerómetro sobre sensor)
-        fft_force_complex = fft(force_arr - np.mean(force_arr))[:n//2]
-        fft_accel_complex = fft(accel_arr_1 - np.mean(accel_arr_1))[:n//2]
-        
-        phase_force = np.angle(fft_force_complex[idx_peak], deg=True)
-        phase_accel = np.angle(fft_accel_complex[idx_peak], deg=True)
-        phase_diff = phase_accel - phase_force
-        
-        # Normalizar a [-180, 180]
-        while phase_diff > 180:
-            phase_diff -= 360
-        while phase_diff < -180:
-            phase_diff += 360
-            
-        delay_ms = (phase_diff / 360) * (1000 / freq_dom) if freq_dom > 0 else 0
-        
-        self.phase_freq_label.setText(f"Frecuencia dominante: {freq_dom:.2f} Hz")
-        self.phase_angle_label.setText(f"Desfase: {phase_diff:.2f} °")
-        self.phase_delay_label.setText(f"Retardo: {delay_ms:.3f} ms")
+        # FRF y Transmisibilidad (usar datos completos)
+        n_common = min(len(force_arr), len(accel_arr_0))
+        if n_common >= 256:
+            freqs = fftfreq(n_common, 1/FORCE_SAMPLE_RATE)[:n_common//2]
+            fft_force_raw = np.abs(fft(force_arr[:n_common] - np.mean(force_arr[:n_common])))[:n_common//2]
+            fft_accel_raw = np.abs(fft(accel_arr_0[:n_common] - np.mean(accel_arr_0[:n_common])))[:n_common//2]
+            H = fft_accel_raw / (fft_force_raw + 1e-12)
+            H_db = 20 * np.log10(np.abs(H) + 1e-12)
+            self.frf_curve.setData(freqs, H_db)
+            self.transmisibilidad_curve.setData([], [])
     
     def _update_friction_analysis(self, force_arr, accel_arr, t_arr):
         """
@@ -1636,7 +1685,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             duration = time.time() - self.recording_start_time
             self.capture_btn.setText("🔴 Iniciar Grabación")
             self.capture_btn.setStyleSheet("background-color: #e74c3c; color: white; font-size: 14px; font-weight: bold; padding: 10px;")
-            n_samples = len(self.all_force_data)
+            n_samples = len(self.all_accel_data_0) if self.experiment_mode == "ACCEL_ONLY" else len(self.all_force_data)
             self.status_label.setText(f"✅ Grabación detenida: {n_samples} muestras ({duration:.1f}s) - Presiona 'Guardar' para exportar")
             
     def capture_experiment(self):
@@ -1840,7 +1889,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
     def save_results(self):
         """Guarda los datos grabados directamente"""
         # Si hay datos en buffer (grabación reciente), guardar directamente
-        if len(self.all_force_data) >= 100:
+        if len(self.all_force_data) >= 100 or (self.experiment_mode == "ACCEL_ONLY" and len(self.all_accel_data_0) >= 100):
             self._save_raw_recording()
             return
             
@@ -1853,7 +1902,50 @@ class CaracterizacionFuerzaGUI(QMainWindow):
     def _save_raw_recording(self):
         """Guarda grabación cruda directamente a archivo"""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        
+        rpm_husillo = self.rpm_husillo_spin.value()
+
+        # ── Modo ACCEL_ONLY: guardar solo acelerómetro ──
+        if self.experiment_mode == "ACCEL_ONLY":
+            accel_arr_0 = np.array(self.all_accel_data_0)
+            n = len(accel_arr_0)
+            t = np.arange(n) / ACCEL_SAMPLE_RATE
+
+            df = pd.DataFrame({
+                'tiempo_s': t,
+                'aceleracion_sensor_g': accel_arr_0[:n],
+            })
+
+            filename = f"accel_{timestamp}_{rpm_husillo}rpm.csv"
+            filepath = os.path.join(DATOS_DIR, filename)
+            df.to_csv(filepath, index=False, sep='\t')
+
+            import json as _json
+            sidecar = {
+                'file': filename,
+                'timestamp': timestamp,
+                'fs_hz': ACCEL_SAMPLE_RATE,
+                'n_samples': int(n),
+                'duration_s': round(float(n / ACCEL_SAMPLE_RATE), 3),
+                'experiment_mode': 'ACCEL_ONLY',
+                'rpm_husillo': rpm_husillo,
+                'notas': self.notas_edit.text(),
+                'canal_aceleracion': 'ai0 bancada (NI 9234)',
+            }
+            json_path = filepath.replace('.csv', '_meta.json')
+            with open(json_path, 'w', encoding='utf-8') as jf:
+                _json.dump(sidecar, jf, indent=2, ensure_ascii=False)
+
+            duration = n / ACCEL_SAMPLE_RATE
+            QMessageBox.information(self, "Guardado",
+                f"Datos guardados (solo acel):\n{filepath}\n{json_path}\n\n"
+                f"Muestras: {n}\nDuracion: {duration:.2f}s\nRPM: {rpm_husillo}")
+            self.status_label.setText(f"💾 Guardado: {filename}")
+
+            self.all_accel_data_0.clear()
+            self.all_accel_data_1.clear()
+            return
+
+        # ── Modos con fuerza + acelerómetro ──
         force_arr = np.array(self.all_force_data)
         accel_arr_0 = np.array(self.all_accel_data_0)  # Canal 0 = Prensa
         accel_arr_1 = np.array(self.all_accel_data_1)  # Canal 1 = Pieza
@@ -1881,7 +1973,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
         
         # Nombre del archivo (incluye condición del cortador)
         cutter_cond = self.cutter_condition_combo.currentText().lower().replace(" ", "_") if self.experiment_mode == "CUTTING" else "general"
-        rpm_str = f"_{self.rpm_husillo_spin.value()}rpm" if self.experiment_mode == "CUTTING" else ""
+        rpm_str = f"_{rpm_husillo}rpm" if self.experiment_mode == "CUTTING" else ""
         filename = f"corte_{timestamp}{rpm_str}_{cutter_cond}.csv"
         filepath = os.path.join(DATOS_DIR, filename)
 
@@ -1897,7 +1989,7 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             'duration_s': round(float(n / FORCE_SAMPLE_RATE), 3),
             'experiment_mode': self.experiment_mode,
             'cutter_condition': self.cutter_condition_combo.currentText() if self.experiment_mode == "CUTTING" else "N/A",
-            'rpm_husillo': self.rpm_husillo_spin.value() if self.experiment_mode == "CUTTING" else 0,
+            'rpm_husillo': rpm_husillo if self.experiment_mode == "CUTTING" else 0,
             'rpm_avance_x': self.rpm_avance_spin.value() if self.experiment_mode == "CUTTING" else 0,
             'notas': self.notas_edit.text(),
             'canal_fuerza': 'ai0 (NI 9205)',
@@ -1969,6 +2061,12 @@ if __name__ == "__main__":
     print("   - Mide fuerza y aceleración durante el corte real")
     print("   - Análisis: THD, Bouc-Wen, lazo F-a")
     print("   - Detecta histéresis del proceso de corte")
+    print("")
+    print("📡 MODO SOLO ACELERÓMETRO:")
+    print("   - Captura solo vibración (sin sensor de fuerza)")
+    print("   - Configura RPM del husillo para etiquetar la prueba")
+    print("   - Archivos: accel_YYYYMMDD_HHMMSS_XXXrpm.csv")
+    print("   - Útil para baseline de husillo sin corte")
     print("="*60 + "\n")
     
     sys.exit(app.exec_())

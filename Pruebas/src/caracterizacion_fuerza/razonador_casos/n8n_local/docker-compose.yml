@@ -1,0 +1,51 @@
+# =============================================================
+# n8n LOCAL (Windows / Docker Desktop)
+# Orquestador para el Razonador CBR
+#
+# Uso:
+#   cd Pruebas\src\caracterizacion_fuerza\razonador_casos\n8n_local
+#   docker compose up -d
+#
+# Acceso:
+#   n8n UI:  http://localhost:5678
+#   Usuario: cidesi  /  Password: cerebro2026
+#
+# n8n alcanza los servicios del host (tu PC) usando:
+#   - Razonador CBR:  http://host.docker.internal:8100
+#   - Ollama:         http://host.docker.internal:11434
+# =============================================================
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: n8n-local-cbr
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # Autenticacion basica
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: cidesi
+      N8N_BASIC_AUTH_PASSWORD: cerebro2026
+      # URL base
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      # Python/JS en Code nodes
+      N8N_RUNNERS_ENABLED: "true"
+      # Zona horaria
+      GENERIC_TIMEZONE: America/Mexico_City
+      TZ: America/Mexico_City
+      # Prune de ejecuciones viejas (7 dias)
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "168"
+      # Permitir respuestas grandes del LLM
+      N8N_PAYLOAD_SIZE_MAX: "32"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  n8n_data:

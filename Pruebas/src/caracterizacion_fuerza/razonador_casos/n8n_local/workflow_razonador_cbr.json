@@ -1,0 +1,115 @@
+{
+  "name": "Razonador CBR - Diagnostico Histeresis",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "Ejecutar manualmente",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "case_id",
+              "value": "corte_20260311_131921_600_40",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "top_k",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "a3",
+              "name": "model",
+              "value": "qwen3:8b",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-input",
+      "name": "Definir caso",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8100/reason",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"case_id\": \"{{ $json.case_id }}\",\n  \"top_k\": {{ $json.top_k }},\n  \"model\": \"{{ $json.model }}\"\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "http-reason",
+      "name": "Razonador CBR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "caso",
+              "value": "={{ $json.case_id }}",
+              "type": "string"
+            },
+            {
+              "id": "r2",
+              "name": "diagnostico",
+              "value": "={{ $json.reasoning }}",
+              "type": "string"
+            },
+            {
+              "id": "r3",
+              "name": "casos_similares",
+              "value": "={{ $json.matches }}",
+              "type": "array"
+            },
+            {
+              "id": "r4",
+              "name": "tiempo_total_s",
+              "value": "={{ $json.total_time_s }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-output",
+      "name": "Extraer resultado",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 300]
+    }
+  ],
+  "connections": {
+    "Ejecutar manualmente": {
+      "main": [[{ "node": "Definir caso", "type": "main", "index": 0 }]]
+    },
+    "Definir caso": {
+      "main": [[{ "node": "Razonador CBR", "type": "main", "index": 0 }]]
+    },
+    "Razonador CBR": {
+      "main": [[{ "node": "Extraer resultado", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

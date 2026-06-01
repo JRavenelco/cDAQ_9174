@@ -19,6 +19,9 @@ import csv
 from collections import deque
 import traceback
 
+from scipy.fft import fft, fftfreq
+from scipy.signal import welch
+
 import nidaqmx
 from nidaqmx.constants import AcquisitionType, TerminalConfiguration, ExcitationSource, Coupling
 
@@ -26,13 +29,14 @@ from nidaqmx.constants import AcquisitionType, TerminalConfiguration, Excitation
 # CONFIGURACIÓN
 # --------------------------------------------------
 VIB_DISPOSITIVO = "cDAQ1Mod2"
-VIB_CANALES = ["ai0", "ai1"]
+VIB_CANALES = ["ai0"]
 VIB_SAMPLE_RATE = 2000  # Hz
-VIB_MUESTRAS_POR_BLOQUE = 100
-TIME_WINDOW = 0.5  # segundos
-ACCEL_MIN_G = -0.2
-ACCEL_MAX_G = 0.2
-ACC_SENSITIVITY = 98.3  # mV/g (PCB 352C33)
+VIB_MUESTRAS_POR_BLOQUE = 200
+TIME_WINDOW = 2.0  # segundos
+ACCEL_MIN_G = -50.0
+ACCEL_MAX_G = 50.0
+ACC_SENSITIVITY = 100.0  # mV/g (PCB 352C33)
+FFT_NFFT = 4096  # puntos para FFT
 
 DATOS_DIR = "experimentos_caja_planetaria"
 AUTO_SAVE_BASE_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), DATOS_DIR)
@@ -152,8 +156,8 @@ class VibrationAcquisitionThread(threading.Thread):
 class AcelerometroDAQ(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DAQ Acelerómetro - NI 9234")
-        self.resize(1000, 600)
+        self.setWindowTitle("DAQ Acelerómetro - NI 9234 (ai0 + FFT)")
+        self.resize(1200, 700)
         
         # Estado
         self.acquiring = False
@@ -161,9 +165,10 @@ class AcelerometroDAQ(QMainWindow):
         self.time_window = TIME_WINDOW
         buffer_size = max(int(self.time_window * self.sample_rate), 2)
         
-        # Buffers
-        self.all_vib_data = [[] for _ in range(len(VIB_CANALES))]
-        self.vib_buffer = [deque(maxlen=buffer_size) for _ in range(len(VIB_CANALES))]
+        # Buffers - solo 1 canal
+        self.all_vib_data = [[]]
+        self.vib_buffer = deque(maxlen=buffer_size)
+        self.fft_buffer = deque(maxlen=FFT_NFFT)  # buffer para FFT
         self.tiempo = np.linspace(-self.time_window, 0, buffer_size)
         
         # Sesión
@@ -192,8 +197,8 @@ class AcelerometroDAQ(QMainWindow):
         main_layout.setSpacing(5)
         
         # Título
-        title = QLabel("Adquisición de Acelerómetro (NI 9234)")
-        title.setStyleSheet("font-size: 16pt; font-weight: bold;")
+        title = QLabel("Adquisición Acelerómetro ai0 (NI 9234) + FFT")
+        title.setStyleSheet("font-size: 14pt; font-weight: bold;")
         main_layout.addWidget(title)
         
         # --- METADATOS EXPERIMENTALES ---
@@ -209,124 +214,87 @@ class AcelerometroDAQ(QMainWindow):
         self.voltaje_spin.setSingleStep(0.1)
         self.voltaje_spin.setDecimals(2)
         self.voltaje_spin.setSuffix(" V")
-        self.voltaje_spin.setToolTip("Voltaje de operación en volts")
         metadata_layout.addWidget(self.voltaje_spin, 0, 1)
         
         # Nivel de Desbalanceo
-        metadata_layout.addWidget(QLabel("Nivel Desbalanceo:"), 0, 2)
+        metadata_layout.addWidget(QLabel("Desbalanceo:"), 0, 2)
         self.nivel_desbalanceo_spin = QtWidgets.QSpinBox()
         self.nivel_desbalanceo_spin.setRange(0, 10)
         self.nivel_desbalanceo_spin.setValue(0)
-        self.nivel_desbalanceo_spin.setToolTip("Nivel de desbalanceo del experimento (0-10)")
         metadata_layout.addWidget(self.nivel_desbalanceo_spin, 0, 3)
         
         # Nivel de Desalineamiento
-        metadata_layout.addWidget(QLabel("Nivel Desalineamiento:"), 1, 0)
+        metadata_layout.addWidget(QLabel("Desalineamiento:"), 0, 4)
         self.nivel_desalineamiento_spin = QtWidgets.QSpinBox()
         self.nivel_desalineamiento_spin.setRange(0, 10)
         self.nivel_desalineamiento_spin.setValue(0)
-        self.nivel_desalineamiento_spin.setToolTip("Nivel de desalineamiento (0-10)")
-        metadata_layout.addWidget(self.nivel_desalineamiento_spin, 1, 1)
+        metadata_layout.addWidget(self.nivel_desalineamiento_spin, 0, 5)
         
         # Nivel de Frenado
-        metadata_layout.addWidget(QLabel("Nivel Frenado:"), 1, 2)
+        metadata_layout.addWidget(QLabel("Frenado:"), 1, 0)
         self.nivel_frenado_spin = QtWidgets.QSpinBox()
         self.nivel_frenado_spin.setRange(0, 10)
         self.nivel_frenado_spin.setValue(0)
-        self.nivel_frenado_spin.setToolTip("Nivel de frenado (0-10)")
-        metadata_layout.addWidget(self.nivel_frenado_spin, 1, 3)
+        metadata_layout.addWidget(self.nivel_frenado_spin, 1, 1)
         
-        # Orden de Corrida (manual)
-        metadata_layout.addWidget(QLabel("Orden Corrida:"), 2, 0)
+        # Orden de Corrida
+        metadata_layout.addWidget(QLabel("Orden:"), 1, 2)
         self.orden_corrida_spin = QtWidgets.QSpinBox()
         self.orden_corrida_spin.setRange(1, 9999)
         self.orden_corrida_spin.setValue(1)
-        self.orden_corrida_spin.setToolTip("Número de corrida (manual)")
-        metadata_layout.addWidget(self.orden_corrida_spin, 2, 1)
+        metadata_layout.addWidget(self.orden_corrida_spin, 1, 3)
         
-        # Notas adicionales
-        metadata_layout.addWidget(QLabel("Notas:"), 2, 2)
+        # Notas
+        metadata_layout.addWidget(QLabel("Notas:"), 1, 4)
         self.notas_edit = QtWidgets.QLineEdit()
-        self.notas_edit.setPlaceholderText("Observaciones opcionales...")
-        metadata_layout.addWidget(self.notas_edit, 2, 3, 1, 1)
+        self.notas_edit.setPlaceholderText("Observaciones...")
+        metadata_layout.addWidget(self.notas_edit, 1, 5)
         
         main_layout.addWidget(metadata_group)
         
-        # --- CANALES Y OPCIONES ---
-        canales_group = QGroupBox("Canales y Opciones")
-        canales_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        canales_layout = QGridLayout(canales_group)
-        
-        # Checkboxes por canal
-        self.channel_checkboxes = {}
-        for col, canal in enumerate(VIB_CANALES):
-            cb = QCheckBox(f"Habilitar {canal}")
-            cb.setChecked(True)
-            cb.setToolTip(f"Habilita el procesamiento/guardado del canal {canal}")
-            # Limpiar curva y buffer al deshabilitar
-            cb.stateChanged.connect(lambda state, ch=canal: self.on_channel_toggled(ch, state))
-            self.channel_checkboxes[canal] = cb
-            canales_layout.addWidget(cb, 0, col)
-        
-        # Checkbox de normalización (z-score)
-        self.normalize_checkbox = QCheckBox("Normalizar (z-score)")
-        self.normalize_checkbox.setChecked(False)
-        self.normalize_checkbox.setToolTip("Aplica z-score por bloque para visualización y al guardar (si está activado)")
-        self.normalize_checkbox.toggled.connect(self.on_normalize_toggled)
-        canales_layout.addWidget(self.normalize_checkbox, 1, 0, 1, len(VIB_CANALES))
-        
-        main_layout.addWidget(canales_group)
-        
         # Info labels
-        info_layout = QGridLayout()
-        self.vib_value_labels = []
-        self.vib_rms_labels = []
-        self.vib_max_labels = []
-        
-        for i, canal in enumerate(VIB_CANALES):
-            header = QLabel(f"Canal {canal}")
-            header.setStyleSheet("font-size: 11pt; font-weight: bold;")
-            info_layout.addWidget(header, 0, i)
-            
-            v_label = QLabel("Valor: 0.00 g")
-            r_label = QLabel("RMS: 0.00 g")
-            m_label = QLabel("Max: 0.00 g")
-            
-            for row, lab in enumerate([v_label, r_label, m_label], start=1):
-                lab.setStyleSheet("font-size: 10pt;")
-                info_layout.addWidget(lab, row, i)
-            
-            self.vib_value_labels.append(v_label)
-            self.vib_rms_labels.append(r_label)
-            self.vib_max_labels.append(m_label)
-        
+        info_layout = QHBoxLayout()
+        self.lbl_valor = QLabel("Valor: 0.00 g")
+        self.lbl_rms = QLabel("RMS: 0.00 g")
+        self.lbl_max = QLabel("Max: 0.00 g")
+        self.lbl_muestras = QLabel("Muestras: 0")
+        self.lbl_freq_pico = QLabel("Pico FFT: -- Hz")
+        for lbl in [self.lbl_valor, self.lbl_rms, self.lbl_max, self.lbl_muestras, self.lbl_freq_pico]:
+            lbl.setStyleSheet("font-size: 10pt; font-weight: bold;")
+            info_layout.addWidget(lbl)
         main_layout.addLayout(info_layout)
         
-        # Plots
+        # --- PLOTS: Tiempo (izq) + FFT (der) ---
         plot_container = QWidget()
         plot_layout = QHBoxLayout(plot_container)
         plot_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.vib_plot_widgets = []
-        self.vib_plot_curves = []
-        colors = ['#FFD700', '#00FFFF']
+        # Plot tiempo
+        self.time_plot = pg.PlotWidget()
+        self.time_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.time_plot.setLabel('left', 'Aceleración', 'g')
+        self.time_plot.setLabel('bottom', 'Tiempo', 's')
+        self.time_plot.setTitle('Señal Temporal - ai0')
+        self.time_plot.showGrid(x=True, y=True)
+        self.time_plot.setXRange(-self.time_window, 0)
+        self.time_plot.enableAutoRange(axis='y')
+        self.time_curve = self.time_plot.plot(pen=pg.mkPen(color='#FFD700', width=1.5))
+        plot_layout.addWidget(self.time_plot)
         
-        for i, canal in enumerate(VIB_CANALES):
-            w = pg.PlotWidget()
-            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            w.setLabel('left', 'Aceleración', 'g')
-            w.setLabel('bottom', 'Tiempo', 's')
-            w.setTitle(f'Acelerómetro {canal}')
-            w.showGrid(x=True, y=True)
-            w.setYRange(ACCEL_MIN_G, ACCEL_MAX_G)
-            w.setXRange(-self.time_window, 0)
-            
-            pen = pg.mkPen(color=colors[i % len(colors)], width=2)
-            curve = w.plot(pen=pen)
-            
-            self.vib_plot_widgets.append(w)
-            self.vib_plot_curves.append(curve)
-            plot_layout.addWidget(w)
+        # Plot FFT
+        self.fft_plot = pg.PlotWidget()
+        self.fft_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.fft_plot.setLabel('left', 'Amplitud', 'g')
+        self.fft_plot.setLabel('bottom', 'Frecuencia', 'Hz')
+        self.fft_plot.setTitle(f'FFT (N={FFT_NFFT}, Fs={VIB_SAMPLE_RATE} Hz)')
+        self.fft_plot.showGrid(x=True, y=True)
+        self.fft_plot.setXRange(0, VIB_SAMPLE_RATE / 2)
+        self.fft_plot.enableAutoRange(axis='y')
+        self.fft_curve = self.fft_plot.plot(pen=pg.mkPen(color='#00FF88', width=1.2))
+        # Línea de pico
+        self.fft_peak_line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('r', width=1.5, style=QtCore.Qt.DashLine))
+        self.fft_plot.addItem(self.fft_peak_line)
+        plot_layout.addWidget(self.fft_plot)
         
         main_layout.addWidget(plot_container, stretch=1)
         
@@ -356,10 +324,9 @@ class AcelerometroDAQ(QMainWindow):
 
     def start_acquisition(self):
         # Limpiar buffers
-        for buf in self.vib_buffer:
-            buf.clear()
-        for data_list in self.all_vib_data:
-            data_list.clear()
+        self.vib_buffer.clear()
+        self.fft_buffer.clear()
+        self.all_vib_data = [[]]
         
         # Crear nombre de sesión
         now = datetime.now()
@@ -399,7 +366,7 @@ class AcelerometroDAQ(QMainWindow):
         
         self.start_stop_button.setText("Iniciar Adquisición")
         self.save_button.setEnabled(True)
-        self.status_label.setText("Detenido")
+        self.status_label.setText(f"Detenido - {len(self.all_vib_data[0])} muestras")
         print("🛑 Adquisición detenida")
 
     def update_plots(self):
@@ -407,90 +374,77 @@ class AcelerometroDAQ(QMainWindow):
             try:
                 datos_np = vib_queue.get_nowait()
                 
-                for i in range(len(VIB_CANALES)):
-                    if i < datos_np.shape[0]:
-                        canal = VIB_CANALES[i]
-                        enabled = True
-                        try:
-                            enabled = self.channel_checkboxes[canal].isChecked()
-                        except Exception:
-                            pass
-                        datos_canal_raw = datos_np[i]
-                        
-                        # Siempre almacenar datos crudos para posible guardado posterior
-                        self.all_vib_data[i].extend(datos_canal_raw.tolist())
-                        
-                        # Preparar datos para visualización (normalizados o crudos)
-                        if self.normalize_checkbox.isChecked():
-                            mu = float(np.mean(datos_canal_raw))
-                            sigma = float(np.std(datos_canal_raw))
-                            if sigma <= 1e-12:
-                                sigma = 1e-12
-                            datos_display = (datos_canal_raw - mu) / sigma
-                            units = "z"
-                        else:
-                            datos_display = datos_canal_raw
-                            units = "g"
-                        
-                        # Actualización según esté habilitado el canal
-                        if enabled:
-                            self.vib_buffer[i].extend(datos_display)
-                            # Actualizar labels
-                            if len(datos_display) > 0:
-                                valor = float(datos_display[-1])
-                                rms = float(np.sqrt(np.mean(datos_display ** 2)))
-                                max_val = float(np.max(np.abs(datos_display)))
-                                self.vib_value_labels[i].setText(f"Valor: {valor:.3f} {units}")
-                                self.vib_rms_labels[i].setText(f"RMS: {rms:.3f} {units}")
-                                self.vib_max_labels[i].setText(f"Max: {max_val:.3f} {units}")
-                            # Actualizar plot
-                            if len(self.vib_buffer[i]) >= 2:
-                                data = np.array(self.vib_buffer[i])
-                                n = len(data)
-                                t = np.linspace(-n / self.sample_rate, 0, n)
-                                self.vib_plot_curves[i].setData(t, data)
-                        else:
-                            # Canal deshabilitado: limpiar curva y etiquetas
-                            self.vib_plot_curves[i].setData([], [])
-                            self.vib_value_labels[i].setText("Valor: - (off)")
-                            self.vib_rms_labels[i].setText("RMS: - (off)")
-                            self.vib_max_labels[i].setText("Max: - (off)")
+                # Solo canal 0 (ai0)
+                if datos_np.ndim == 1:
+                    datos_canal = datos_np
+                else:
+                    datos_canal = datos_np[0] if datos_np.shape[0] >= 1 else datos_np.flatten()
+                
+                # Almacenar datos crudos
+                self.all_vib_data[0].extend(datos_canal.tolist())
+                
+                # Buffer para visualización temporal
+                self.vib_buffer.extend(datos_canal)
+                
+                # Buffer para FFT
+                self.fft_buffer.extend(datos_canal)
+                
+                # Actualizar labels
+                valor = float(datos_canal[-1])
+                rms = float(np.sqrt(np.mean(np.array(datos_canal) ** 2)))
+                max_val = float(np.max(np.abs(datos_canal)))
+                self.lbl_valor.setText(f"Valor: {valor:.4f} g")
+                self.lbl_rms.setText(f"RMS: {rms:.4f} g")
+                self.lbl_max.setText(f"Max: {max_val:.4f} g")
+                self.lbl_muestras.setText(f"Muestras: {len(self.all_vib_data[0])}")
+                
             except queue.Empty:
                 break
             except Exception as e:
                 print(f"Error actualizando plots: {e}")
-    
-    def on_channel_toggled(self, canal, state):
-        """Limpia buffers y curva cuando un canal se deshabilita."""
-        try:
-            idx = VIB_CANALES.index(canal)
-            self.vib_buffer[idx].clear()
-            # Limpiar curva y etiquetas
-            self.vib_plot_curves[idx].setData([], [])
-            self.vib_value_labels[idx].setText("Valor: - (off)")
-            self.vib_rms_labels[idx].setText("RMS: - (off)")
-            self.vib_max_labels[idx].setText("Max: - (off)")
-        except Exception as e:
-            print(f"Error al togglear canal {canal}: {e}")
-    
-    def on_normalize_toggled(self, checked):
-        """Ajusta los rangos de Y según normalización."""
-        try:
-            if checked:
-                for w in self.vib_plot_widgets:
-                    w.setYRange(-4.0, 4.0)
-            else:
-                for w in self.vib_plot_widgets:
-                    w.setYRange(ACCEL_MIN_G, ACCEL_MAX_G)
-        except Exception as e:
-            print(f"Error actualizando rangos por normalización: {e}")
+        
+        # Actualizar plot temporal
+        if len(self.vib_buffer) >= 2:
+            data = np.array(self.vib_buffer)
+            n = len(data)
+            t = np.linspace(-n / self.sample_rate, 0, n)
+            self.time_curve.setData(t, data)
+        
+        # Actualizar FFT cuando haya suficientes datos
+        if len(self.fft_buffer) >= FFT_NFFT:
+            data_fft = np.array(self.fft_buffer)[-FFT_NFFT:]
+            data_fft = data_fft - np.mean(data_fft)
+            
+            # Ventana Hanning
+            window = np.hanning(FFT_NFFT)
+            data_windowed = data_fft * window
+            
+            # FFT
+            yf = fft(data_windowed)
+            xf = fftfreq(FFT_NFFT, 1.0 / self.sample_rate)[:FFT_NFFT // 2]
+            mag = 2.0 / FFT_NFFT * np.abs(yf[:FFT_NFFT // 2])
+            
+            # Compensar ventana
+            mag = mag / np.mean(window) * 2
+            
+            # Graficar FFT (solo > 2 Hz para evitar DC)
+            mask = xf > 2
+            self.fft_curve.setData(xf[mask], mag[mask])
+            
+            # Detectar pico principal
+            if np.any(mask) and np.max(mag[mask]) > 0:
+                idx_peak = np.argmax(mag[mask])
+                freq_peak = xf[mask][idx_peak]
+                amp_peak = mag[mask][idx_peak]
+                self.fft_peak_line.setPos(freq_peak)
+                self.lbl_freq_pico.setText(f"Pico FFT: {freq_peak:.1f} Hz ({amp_peak:.4f} g)")
 
     def save_current_session_data(self):
         if not self.current_session_base_filename:
             QtWidgets.QMessageBox.warning(self, "Error", "No hay sesión activa para guardar")
             return
         
-        if not any(len(c) > 0 for c in self.all_vib_data):
+        if len(self.all_vib_data[0]) == 0:
             QtWidgets.QMessageBox.warning(self, "Sin datos", "No hay datos para guardar")
             return
         
@@ -501,30 +455,15 @@ class AcelerometroDAQ(QMainWindow):
         nivel_frenado = self.nivel_frenado_spin.value()
         orden_corrida = self.orden_corrida_spin.value()
         notas = self.notas_edit.text()
-        normalizado = self.normalize_checkbox.isChecked()
         
-        # Canales habilitados
-        enabled_indices = [i for i, c in enumerate(VIB_CANALES) if self.channel_checkboxes.get(c) is None or self.channel_checkboxes[c].isChecked()]
-        if len(enabled_indices) == 0:
-            QtWidgets.QMessageBox.warning(self, "Sin canales", "No hay canales habilitados para guardar")
-            return
-        
-        # Longitudes disponibles de canales habilitados
-        available_lengths = [len(self.all_vib_data[i]) for i in enabled_indices if len(self.all_vib_data[i]) > 0]
-        if len(available_lengths) == 0:
-            QtWidgets.QMessageBox.warning(self, "Sin datos", "No hay datos en los canales habilitados para guardar")
-            return
-        
-        # Construir nombre con metadatos (voltaje formateado sin decimales si es entero)
+        # Construir nombre con metadatos
         voltaje_str = f"{voltaje:.2f}".rstrip('0').rstrip('.')
         filename = f"{self.current_session_base_filename}_V{voltaje_str}_D{nivel_desbalanceo}_A{nivel_desalineamiento}_F{nivel_frenado}_O{orden_corrida}_vibracion.csv"
         
         try:
-            min_len = min(available_lengths)
-            time_vector = np.linspace(0, (min_len - 1) / self.sample_rate, min_len)
+            n_samples = len(self.all_vib_data[0])
+            time_vector = np.linspace(0, (n_samples - 1) / self.sample_rate, n_samples)
             
-            # Header con metadatos como comentarios
-            canales_guardados = ", ".join([VIB_CANALES[i] for i in enabled_indices])
             metadata_header = (
                 f"# Voltaje: {voltaje:.2f} V\n"
                 f"# Nivel Desbalanceo: {nivel_desbalanceo}\n"
@@ -532,37 +471,22 @@ class AcelerometroDAQ(QMainWindow):
                 f"# Nivel Frenado: {nivel_frenado}\n"
                 f"# Orden Corrida: {orden_corrida}\n"
                 f"# Notas: {notas}\n"
-                f"# Normalizado (z-score): {normalizado}\n"
-                f"# Canales guardados: {canales_guardados}\n"
+                f"# Normalizado (z-score): False\n"
+                f"# Canales guardados: ai0\n"
                 f"# Sample Rate: {self.sample_rate} Hz\n"
-                f"# Duracion: {min_len/self.sample_rate:.3f} s\n"
+                f"# Duracion: {n_samples/self.sample_rate:.3f} s\n"
             )
             
-            unidades = "z" if normalizado else "g"
-            header_cols = ["Tiempo(s)"] + [f"Acel_{VIB_CANALES[i]}({unidades})" for i in enabled_indices]
+            header_cols = ["Tiempo(s)", "Acel_ai0(g)"]
+            arr = np.array(self.all_vib_data[0])
+            data_to_save = np.column_stack([time_vector, arr])
             
-            data_arrays = [time_vector]
-            for i in enabled_indices:
-                arr_raw = np.array(self.all_vib_data[i][:min_len])
-                if normalizado:
-                    mu = float(np.mean(arr_raw))
-                    sigma = float(np.std(arr_raw))
-                    if sigma <= 1e-12:
-                        sigma = 1e-12
-                    arr = (arr_raw - mu) / sigma
-                else:
-                    arr = arr_raw
-                data_arrays.append(arr)
-            
-            data_to_save = np.array(data_arrays).T
-            
-            # Guardar con metadatos en header
             with open(filename, 'w') as f:
                 f.write(metadata_header)
                 f.write(",".join(header_cols) + "\n")
                 np.savetxt(f, data_to_save, delimiter=",", fmt='%.6f')
             
-            # Guardar log con metadatos
+            # Guardar log
             self.log_experiment_details()
             
             QtWidgets.QMessageBox.information(
@@ -571,7 +495,7 @@ class AcelerometroDAQ(QMainWindow):
                 f"Voltaje: {voltaje:.2f} V\n"
                 f"Desbalanceo: {nivel_desbalanceo}, Desalineamiento: {nivel_desalineamiento}, Frenado: {nivel_frenado}\n"
                 f"Orden: {orden_corrida}\n"
-                f"Muestras: {min_len}, Duración: {min_len/self.sample_rate:.2f} s"
+                f"Muestras: {n_samples}, Duración: {n_samples/self.sample_rate:.2f} s"
             )
             print(f"✅ Datos guardados: {filename}")
             

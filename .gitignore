@@ -72,6 +72,23 @@ Pruebas/src/remote_monitoring/logs/cdaq_remote_202602*_inference.csv
 !Pruebas/src/caracterizacion_fuerza/resumen_gemini/RESUMEN_ANALISIS_CORTE_CNC.md
 !Pruebas/src/caracterizacion_fuerza/resumen_gemini/PROMPT_GEMINI.md
 
+# ── Whitelist: razonador_casos (Razonador CBR) ──
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/*.py
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/*.md
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/prompts/
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/prompts/*.md
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/n8n_local/
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/n8n_local/*.yml
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/n8n_local/*.md
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/n8n_local/*.json
+# Base de casos (dataset historico)
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/salidas/
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/salidas/casos_dataset/
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/salidas/casos_dataset/casos_historicos.csv
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/salidas/casos_dataset/casos_historicos.jsonl
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/salidas/casos_dataset/resumen_casos.md
+
 # ── Contexto levitador (relevante para tesis) ──
 !levitador valentin/*.md
 !levitador-python/pinn/colab_files/
