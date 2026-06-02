@@ -82,6 +82,10 @@ Pruebas/src/remote_monitoring/logs/cdaq_remote_202602*_inference.csv
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/n8n_local/*.yml
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/n8n_local/*.md
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/n8n_local/*.json
+# Razonador CBR en Simulink (fuentes MATLAB). El .mat/.slx se regeneran y se ignoran.
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/simulink_cbr/
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/simulink_cbr/*.m
+!Pruebas/src/caracterizacion_fuerza/razonador_casos/simulink_cbr/*.md
 # Base de casos (dataset historico)
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/salidas/
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/salidas/casos_dataset/
