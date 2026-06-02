@@ -86,6 +86,16 @@ Pruebas/src/remote_monitoring/logs/cdaq_remote_202602*_inference.csv
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/simulink_cbr/
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/simulink_cbr/*.m
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/simulink_cbr/*.md
+
+# ── Whitelist: razonador_simulink (CBR + VLM orquestador, standalone) ──
+!Pruebas/src/razonador_simulink/
+!Pruebas/src/razonador_simulink/*.m
+!Pruebas/src/razonador_simulink/*.md
+!Pruebas/src/razonador_simulink/prompts/
+!Pruebas/src/razonador_simulink/prompts/*.md
+# Dataset de casos (se versiona el CSV; el .mat/.slx se regeneran)
+!Pruebas/src/razonador_simulink/datos/
+!Pruebas/src/razonador_simulink/datos/casos_historicos.csv
 # Base de casos (dataset historico)
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/salidas/
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/salidas/casos_dataset/
