@@ -67,6 +67,10 @@ classdef CBRHysteresisSystem < matlab.System & matlab.system.mixin.Propagates
         end
 
         function [class_id, min_dist, best_score, best_idx] = stepImpl(obj, features)
+            % Forzar fila [1 x D]: Simulink pasa la senal como columna [D x 1]
+            % y el broadcasting con feat_center [1 x D] daria una matriz [D x D].
+            features = reshape(features, 1, []);
+
             class_id   = 0;
             min_dist   = -1;
             best_score = 0;

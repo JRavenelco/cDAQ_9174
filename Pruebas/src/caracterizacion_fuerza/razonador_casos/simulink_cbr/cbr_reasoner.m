@@ -30,6 +30,12 @@ function [class_id, min_dist, best_score, best_idx] = cbr_reasoner(features, thr
 %
 % Autor: Jesus Santana-Ramirez (tesis doctoral, histeresis en fresado)
 
+    % ── Forzar orientacion fila [1 x D] ───────────────────────────────────
+    % Simulink propaga las senales vectoriales como columna [D x 1]; el
+    % broadcasting con feat_center [1 x D] daria una matriz [D x D] y norm()
+    % se dispara. reshape garantiza el calculo correcto sea fila o columna.
+    features = reshape(features, 1, []);
+
     % ── Cargar base de casos de forma estatica (una sola vez) ──────────────
     persistent S
     if isempty(S)
