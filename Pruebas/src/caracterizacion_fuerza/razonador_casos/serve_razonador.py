@@ -41,12 +41,15 @@ from razonador_local import (
     DEFAULT_MODEL,
     FEATURE_WEIGHTS,
     OLLAMA_URL,
+    OPENROUTER_API_KEY,
+    OPENROUTER_MODEL,
     OUTPUT_DIR,
     PROMPT_FILE,
     RETRIEVAL_FEATURES,
     as_float,
     build_reasoning_prompt,
-    call_ollama,
+    call_llm,
+    resolve_provider,
     load_cases,
     load_system_prompt,
     retrieve_similar,
@@ -130,6 +133,8 @@ class HealthResponse(BaseModel):
     cases_loaded: int
     model: str
     ollama_url: str
+    cloud_available: bool
+    cloud_model: str
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -199,6 +204,8 @@ def health():
         cases_loaded=len(_library),
         model=_config.get("model", DEFAULT_MODEL),
         ollama_url=OLLAMA_URL,
+        cloud_available=bool(OPENROUTER_API_KEY),
+        cloud_model=OPENROUTER_MODEL,
     )
 
 
@@ -248,10 +255,10 @@ def reason(req: ReasonRequest):
     # Retrieve
     matches, retrieval_ms = _do_retrieve(query, req.top_k)
 
-    # Build prompt and call LLM
+    # Build prompt and call LLM (local Ollama o cloud OpenRouter segun el modelo)
     user_prompt = build_reasoning_prompt(query, matches)
     t_llm = time.time()
-    reasoning = call_ollama(user_prompt, _system_prompt, model, req.temperature)
+    reasoning = call_llm(user_prompt, _system_prompt, model, req.temperature)
     reasoning_s = time.time() - t_llm
 
     total_s = time.time() - t_total

@@ -65,6 +65,8 @@ Espera ~30s y abre: **http://localhost:5678**
 ## Endpoints del Razonador (para nodos HTTP Request)
 
 ### POST /reason  (retrieval + LLM)
+
+**Modelo LOCAL (Ollama):**
 ```json
 {
   "case_id": "corte_20260311_131921_600_40",
@@ -72,6 +74,22 @@ Espera ~30s y abre: **http://localhost:5678**
   "model": "qwen3:8b"
 }
 ```
+
+**Modelo NUBE (OpenRouter — usa OPENROUTER_MODEL del .env):**
+```json
+{
+  "case_id": "corte_20260311_131921_600_40",
+  "top_k": 3,
+  "model": "cloud"
+}
+```
+
+> El campo `model` enruta automaticamente:
+> - `qwen3:8b`, `gemma4`, `llama3.2:3b` → Ollama local
+> - `cloud` o `qwen/qwen2.5-vl-72b-instruct` (con `/`) → OpenRouter nube
+>
+> La nube responde mas rapido y con mayor calidad, pero requiere
+> `OPENROUTER_API_KEY` configurada en el `.env` de la raiz del repo.
 
 ### POST /retrieve  (solo similares, instantaneo)
 ```json

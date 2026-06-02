@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -55,6 +56,45 @@ CASES_JSONL = SCRIPT_DIR / "salidas" / "casos_dataset" / "casos_historicos.jsonl
 PROMPT_FILE = SCRIPT_DIR / "prompts" / "razonador_final.md"
 OUTPUT_DIR = SCRIPT_DIR / "salidas" / "razonamientos"
 
+# Buscar TODOS los .env del árbol (de la raíz hacia abajo), combinándolos.
+# Los .env más cercanos al script tienen prioridad sobre los de la raíz,
+# pero se rellenan claves faltantes (p.ej. OPENROUTER_* suele estar en la raíz).
+def _find_env_files() -> list[Path]:
+    found: list[Path] = []
+    for parent in [SCRIPT_DIR, *SCRIPT_DIR.parents]:
+        candidate = parent / ".env"
+        if candidate.exists():
+            found.append(candidate)
+    return found
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if path and path.exists():
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            env[key.strip()] = value.strip()
+    return env
+
+
+def _load_env() -> dict[str, str]:
+    """Combina todos los .env del árbol. Closer-to-script gana, raíz rellena."""
+    env: dict[str, str] = {}
+    # Procesar de la raíz hacia el script: así los más cercanos sobreescriben
+    for path in reversed(_find_env_files()):
+        env.update(_parse_env_file(path))
+    # Las variables de entorno del sistema tienen prioridad final
+    for k in ("OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "OPENROUTER_MODEL"):
+        if os.environ.get(k):
+            env[k] = os.environ[k]
+    return env
+
+
+_ENV = _load_env()
+
 # ── Features y pesos para retrieval ────────────────────────────────────────
 RETRIEVAL_FEATURES = [
     "force_rms",
@@ -76,9 +116,28 @@ FEATURE_WEIGHTS = {
     "duration_s": 0.3,
 }
 
-# ── Ollama config ──────────────────────────────────────────────────────────
-OLLAMA_URL = "http://localhost:11434"
+# ── Ollama config (local) ───────────────────────────────────────────────────
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_MODEL = "qwen3:8b"
+
+# ── OpenRouter config (cloud) ─────────────────────────────────────────────────
+OPENROUTER_API_KEY = _ENV.get("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = _ENV.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_MODEL = _ENV.get("OPENROUTER_MODEL", "qwen/qwen2.5-vl-72b-instruct")
+
+
+def resolve_provider(model: str) -> str:
+    """Decide el proveedor según el nombre del modelo.
+
+    - 'cloud' / 'openrouter' / contiene '/'  → OpenRouter
+    - cualquier otro (qwen3:8b, gemma4, ...) → Ollama local
+    """
+    m = (model or "").strip().lower()
+    if m in ("cloud", "openrouter"):
+        return "openrouter"
+    if "/" in m:  # ej. qwen/qwen2.5-vl-72b-instruct
+        return "openrouter"
+    return "ollama"
 
 
 # ===========================================================================
@@ -279,11 +338,25 @@ def retrieve_similar(
 
 
 # ===========================================================================
-# LLM REASONING (Ollama)
+# LLM REASONING (Ollama local / OpenRouter cloud)
 # ===========================================================================
 
+def _http_post_json(url: str, payload: dict, headers: dict | None = None, timeout: int = 300) -> dict:
+    """POST JSON con requests o urllib (fallback). Devuelve el JSON parseado."""
+    headers = headers or {"Content-Type": "application/json"}
+    if _HAVE_REQUESTS:
+        resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    else:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+
 def call_ollama(prompt: str, system: str, model: str, temperature: float = 0.3) -> str:
-    """Llama a Ollama API y devuelve la respuesta."""
+    """Llama a Ollama API (local) y devuelve la respuesta."""
     payload = {
         "model": model,
         "prompt": prompt,
@@ -292,29 +365,61 @@ def call_ollama(prompt: str, system: str, model: str, temperature: float = 0.3) 
         "options": {
             "temperature": temperature,
             "num_predict": 2048,
-        }
+        },
     }
-
     url = f"{OLLAMA_URL}/api/generate"
-
-    if _HAVE_REQUESTS:
-        try:
-            resp = requests.post(url, json=payload, timeout=300)
-            resp.raise_for_status()
-            return resp.json().get("response", "")
-        except requests.ConnectionError:
+    try:
+        return _http_post_json(url, payload, timeout=300).get("response", "")
+    except Exception as e:
+        if "Connection" in type(e).__name__ or "URLError" in type(e).__name__:
             return "[ERROR] No se pudo conectar a Ollama. ¿Está corriendo? (ollama serve)"
-        except Exception as e:
-            return f"[ERROR] Ollama: {e}"
-    else:
-        try:
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(url, data=data,
-                                        headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                return json.loads(resp.read().decode("utf-8")).get("response", "")
-        except Exception as e:
-            return f"[ERROR] Ollama: {e}"
+        return f"[ERROR] Ollama: {e}"
+
+
+def call_openrouter(prompt: str, system: str, model: str, temperature: float = 0.3) -> str:
+    """Llama a OpenRouter (cloud, API compatible con OpenAI) y devuelve la respuesta."""
+    if not OPENROUTER_API_KEY:
+        return ("[ERROR] OPENROUTER_API_KEY no configurada. "
+                "Agrégala a tu .env (OPENROUTER_API_KEY=...).")
+
+    # Si pidieron el modelo cloud genérico, usar el del .env
+    actual_model = OPENROUTER_MODEL if model.lower() in ("cloud", "openrouter") else model
+
+    url = f"{OPENROUTER_BASE_URL.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/JRavenelco/cDAQ_9174",
+        "X-Title": "Razonador CBR - Histeresis",
+    }
+    payload = {
+        "model": actual_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": temperature,
+        "max_tokens": 2048,
+    }
+    try:
+        data = _http_post_json(url, payload, headers=headers, timeout=180)
+        choices = data.get("choices", [])
+        if choices:
+            return choices[0].get("message", {}).get("content", "")
+        return f"[ERROR] OpenRouter respuesta sin choices: {data}"
+    except Exception as e:
+        return f"[ERROR] OpenRouter ({actual_model}): {e}"
+
+
+def call_llm(prompt: str, system: str, model: str, temperature: float = 0.3) -> str:
+    """Enruta la llamada al proveedor correcto según el modelo.
+
+    - Modelos con '/' o 'cloud'/'openrouter' → OpenRouter (nube)
+    - Resto (qwen3:8b, gemma4, llama3.2:3b ...) → Ollama (local)
+    """
+    if resolve_provider(model) == "openrouter":
+        return call_openrouter(prompt, system, model, temperature)
+    return call_ollama(prompt, system, model, temperature)
 
 
 def format_case_summary(case: dict) -> str:
@@ -433,10 +538,11 @@ def reason_about_case(
         user_prompt = build_reasoning_prompt(query, matches)
 
         if verbose:
-            print(f"\n  Llamando a Ollama ({model})...")
+            provider = resolve_provider(model)
+            print(f"\n  Llamando a {provider} ({model})...")
 
         t1 = time.time()
-        reasoning_response = call_ollama(user_prompt, system_prompt, model)
+        reasoning_response = call_llm(user_prompt, system_prompt, model)
         reasoning_time = time.time() - t1
 
         if verbose:
@@ -486,11 +592,18 @@ def save_result(result: dict, output_dir: Path) -> Path:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Razonador Basado en Casos (CBR) con LLM local",
+        description="Razonador Basado en Casos (CBR) con LLM local (Ollama) o nube (OpenRouter)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos:
+  # Local (Ollama):
   python razonador_local.py --case-id corte_20260311_131921_600_40
+  python razonador_local.py --case-id ... --model qwen3:8b
+
+  # Nube (OpenRouter, usa OPENROUTER_MODEL del .env):
+  python razonador_local.py --case-id ... --model cloud
+  python razonador_local.py --case-id ... --model qwen/qwen2.5-vl-72b-instruct
+
   python razonador_local.py --csv ../corte_20260506_151429.csv
   python razonador_local.py --batch --top-k 3 --no-llm
   python razonador_local.py --case-id corte_20260312_134351_400_20 --model gemma4
