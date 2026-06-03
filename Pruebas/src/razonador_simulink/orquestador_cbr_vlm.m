@@ -22,6 +22,9 @@ function out = orquestador_cbr_vlm(features, params)
 %             .modelo     preferencia VLM ('cloud'/'qwen3:8b'/...) (def 'cloud')
 %             .usar_vlm   habilita la capa deliberativa          (def true)
 %             .img_b64    imagen del lazo F-x en base64 (opc)    (def '')
+%             .meta       struct metadato de la capa profunda (KAN-PINN):
+%                         .alpha .R2 .k .c  -> se PASAN al VLM como contexto,
+%                         pero NO entran en la distancia del CBR (son ruidosos).
 %
 % SALIDA (struct out)
 %   .clase_final       clase de histeresis final (1/2/3/0)
@@ -34,6 +37,7 @@ function out = orquestador_cbr_vlm(features, params)
 %   .motivo            (char) explicacion del camino tomado
 %   .estado            0=alta,1=baja_no_OOD,2=OOD
 %   .topk              struct con idx/dist/score/clase del retrieval
+%   .meta              struct metadato KAN-PINN propagado (alpha/R2/k/c)
 %
 % Autor: Jesus Santana-Ramirez (tesis doctoral, histeresis en fresado)
 
@@ -65,6 +69,7 @@ function out = orquestador_cbr_vlm(features, params)
     out.motivo            = motivo_texto(motivo_conf);
     out.estado            = estado;
     out.topk              = struct('idx', idx, 'dist', dist, 'score', score, 'clase', clase);
+    out.meta              = params.meta;
 
     % ── ALTA confianza -> CBR directo (no VLM) ──────────────────────────────
     if estado == 0 || ~params.usar_vlm
@@ -78,7 +83,7 @@ function out = orquestador_cbr_vlm(features, params)
                'confianza',0,'justificacion','','ok',false, ...
                'fuente_modelo','none','raw','');
 
-    user_prompt = construir_prompt_usuario(features, idx, dist, score, clase, estado);
+    user_prompt = construir_prompt_usuario(features, idx, dist, score, clase, estado, params.meta);
     system_prompt = cargar_system_prompt();
 
     v = vlm_cliente(system_prompt, user_prompt, params.img_b64, params.modelo);
@@ -120,8 +125,12 @@ end
 % Helpers
 % ===========================================================================
 function p = params_default()
-    p = struct('K',3, 'threshold',1.0, 'tau_score',0.5, 'tau_margen',0.05, ...
-               'modelo','cloud', 'usar_vlm',true, 'img_b64','');
+    % Umbrales recalibrados a la base F-E (1-vs-resto sobre 19 casos):
+    %   dist in-distribution: mediana=0.093, p75=0.180, p95=p100=0.486
+    %   -> threshold (OOD) 0.6 (sobre el max in-distribution, con margen)
+    %   -> tau_score 0.85 (score en p75 de dist; por debajo => baja confianza)
+    p = struct('K',3, 'threshold',0.6, 'tau_score',0.85, 'tau_margen',0.05, ...
+               'modelo','cloud', 'usar_vlm',true, 'img_b64','', 'meta',struct());
 end
 
 function p = completar_params(p)
@@ -154,13 +163,22 @@ function s = motivo_texto(motivo)
     end
 end
 
-function up = construir_prompt_usuario(features, idx, dist, score, clase, estado)
+function up = construir_prompt_usuario(features, idx, dist, score, clase, estado, meta)
+    if nargin < 7; meta = struct(); end
     q = reshape(features, 1, []);
     names = {'force_rms','force_peak_abs','input_rms','input_peak_abs', ...
-             'corr_force_input','loop_area_norm','duration_s'};
-    lineas = sprintf('MODO: %s\n\nFEATURES DEL CORTE ACTUAL:\n', modo_texto(estado));
+             'corr_FE','loop_area_FE','duration_s'};
+    lineas = sprintf('MODO: %s\n\nFEATURES DEL CORTE ACTUAL (histeresis sobre envolvente F-E):\n', modo_texto(estado));
     for i = 1:numel(names)
         lineas = [lineas sprintf('  %-18s = %.5g\n', names{i}, q(i))]; %#ok<AGROW>
+    end
+    % Metadato de la capa profunda (modelo KAN-PINN): contexto, NO usado en distancia
+    if isstruct(meta) && ~isempty(fieldnames(meta))
+        lineas = [lineas sprintf('\nMETADATO MODELO KAN-PINN (capa profunda, contexto):\n')];
+        if isfield(meta,'alpha'); lineas = [lineas sprintf('  alpha = %.4g  (1=lineal, 0=histeresis)\n', meta.alpha)]; end %#ok<AGROW>
+        if isfield(meta,'R2');    lineas = [lineas sprintf('  R2    = %.4g  (calidad del ajuste; bajo => poco fiable)\n', meta.R2)]; end %#ok<AGROW>
+        if isfield(meta,'k');     lineas = [lineas sprintf('  k     = %.4g\n', meta.k)]; end %#ok<AGROW>
+        if isfield(meta,'c');     lineas = [lineas sprintf('  c     = %.4g\n', meta.c)]; end %#ok<AGROW>
     end
     lineas = [lineas sprintf('\nTOP-%d CASOS RECUPERADOS (CBR):\n', numel(idx))];
     for j = 1:numel(idx)

@@ -14,37 +14,39 @@ function probar_orquestador()
 
     here = fileparts(mfilename('fullpath'));
     if ~isfile(fullfile(here,'datos','base_de_casos_cbr.mat'))
-        exportar_base_casos();
+        exportar_base_casos_fe();
     end
 
     % Para aislar la LOGICA del orquestador del VLM (que requiere red/modelo),
     % por defecto se desactiva el VLM y se fuerza cada estado con los umbrales.
     fprintf('\n================ PRUEBA ORQUESTADOR CBR+VLM ================\n');
 
-    % Caso real de la base: histeresis marcada (loop_area_norm=2.08)
-    feat_marcada = [0.8922 1.2031 0.01753 0.04359 -0.002637 2.0806 30.9996];
-    % Caso real: lineal (loop_area_norm ~ 0.01)
-    feat_lineal  = [0.6747 1.0902 0.01734 0.04373 0.001664 0.0101 49.44];
-    % Caso sintetico claramente OOD (features fuera de rango)
-    feat_ood     = [50 80 5 9 0.9 25 0.5];
+    % Vectores derivados de la BASE F-E ACTIVA (auto-consistentes con la escala
+    % vigente). feat_real = un caso real de la base (alta confianza, dist=0);
+    % feat_baja = punto intermedio entre dos casos (ambiguo, baja confianza);
+    % feat_ood = caso real escalado fuera de la distribucion (OOD).
+    S = load(fullfile(here,'datos','base_de_casos_cbr.mat'));
+    cb = S.case_base;
+    feat_real = cb(1,:);                 % caso real -> coincide consigo mismo
+    feat_baja = 0.5*(cb(1,:) + cb(end,:));   % mezcla de dos casos -> ambiguo
+    feat_ood  = cb(1,:) + 8*(S.feat_scale); % desplazado ~8 IQR -> OOD claro
 
     % ── (a) ALTA confianza: VLM off, umbrales laxos -> CBR directo ──────────
     p = struct('K',3,'threshold',1e6,'tau_score',0.0,'tau_margen',0.0, ...
                'modelo','cloud','usar_vlm',false,'img_b64','');
-    mostrar('(a) ALTA confianza (VLM off)', orquestador_cbr_vlm(feat_marcada, p));
+    mostrar('(a) ALTA confianza (VLM off)', orquestador_cbr_vlm(feat_real, p));
 
     % ── (b) BAJA no-OOD: feature INTERMEDIO (mezcla lineal+marcada) -> estado=1 ─
     %     Un punto ambiguo entre clases NO es identico a ningun caso (score<1) y
     %     queda dentro de la memoria (dist<threshold): cae en baja_no_OOD. Con el
     %     VLM apagado la clase la mantiene el CBR, pero el estado=1 demuestra que
     %     la deteccion del camino auditor funciona (con usar_vlm=true, el VLM auditaria).
-    feat_baja = 0.5 * (feat_lineal + feat_marcada);
-    p = struct('K',3,'threshold',1.0,'tau_score',0.85,'tau_margen',0.05, ...
+    p = struct('K',3,'threshold',0.6,'tau_score',0.85,'tau_margen',0.05, ...
                'modelo','cloud','usar_vlm',false,'img_b64','');
     mostrar('(b) BAJA no-OOD: feature intermedio (VLM off)', orquestador_cbr_vlm(feat_baja, p));
 
-    % ── (c) OOD: threshold bajo, VLM off -> degradado a CBR ─────────────────
-    p = struct('K',3,'threshold',0.01,'tau_score',0.5,'tau_margen',0.05, ...
+    % ── (c) OOD: umbrales F-E por defecto, VLM off -> degradado a CBR ───────
+    p = struct('K',3,'threshold',0.6,'tau_score',0.85,'tau_margen',0.05, ...
                'modelo','cloud','usar_vlm',false,'img_b64','');
     mostrar('(c) OOD (VLM off)', orquestador_cbr_vlm(feat_ood, p));
 
