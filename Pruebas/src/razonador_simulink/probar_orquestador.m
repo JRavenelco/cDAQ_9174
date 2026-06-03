@@ -33,10 +33,15 @@ function probar_orquestador()
                'modelo','cloud','usar_vlm',false,'img_b64','');
     mostrar('(a) ALTA confianza (VLM off)', orquestador_cbr_vlm(feat_marcada, p));
 
-    % ── (b) BAJA no-OOD: forzar baja por tau_score alto, VLM off (degradado/CBR) ─
-    p = struct('K',3,'threshold',1e6,'tau_score',0.99,'tau_margen',0.0, ...
+    % ── (b) BAJA no-OOD: feature INTERMEDIO (mezcla lineal+marcada) -> estado=1 ─
+    %     Un punto ambiguo entre clases NO es identico a ningun caso (score<1) y
+    %     queda dentro de la memoria (dist<threshold): cae en baja_no_OOD. Con el
+    %     VLM apagado la clase la mantiene el CBR, pero el estado=1 demuestra que
+    %     la deteccion del camino auditor funciona (con usar_vlm=true, el VLM auditaria).
+    feat_baja = 0.5 * (feat_lineal + feat_marcada);
+    p = struct('K',3,'threshold',1.0,'tau_score',0.85,'tau_margen',0.05, ...
                'modelo','cloud','usar_vlm',false,'img_b64','');
-    mostrar('(b) BAJA no-OOD (VLM off -> CBR)', orquestador_cbr_vlm(feat_lineal, p));
+    mostrar('(b) BAJA no-OOD: feature intermedio (VLM off)', orquestador_cbr_vlm(feat_baja, p));
 
     % ── (c) OOD: threshold bajo, VLM off -> degradado a CBR ─────────────────
     p = struct('K',3,'threshold',0.01,'tau_score',0.5,'tau_margen',0.05, ...
