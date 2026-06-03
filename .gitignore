@@ -38,6 +38,9 @@ Pruebas/src/remote_monitoring/logs/cdaq_remote_202602*_inference.csv
 
 # ── Whitelist: caracterizacion (reference) ──
 !Pruebas/src/caracterizacion_sensor_fuerza.py
+!Pruebas/src/caracterizacion_rugosimetro.py
+!Pruebas/src/requirements_rugosimetro.txt
+!Pruebas/src/ejecutar_rugosimetro_tmr200.bat
 
 # ── Whitelist: levitador C++ (reference) ──
 !levitador valentin/
