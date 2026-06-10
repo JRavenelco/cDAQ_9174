@@ -19,9 +19,10 @@ function crear_modelo_orquestado()
     here = fileparts(mfilename('fullpath'));
     cd(here);
 
-    if ~isfile(fullfile(here, 'datos', 'base_de_casos_cbr.mat'))
-        fprintf('Generando base de casos primero...\n');
-        exportar_base_casos();
+    mat_path = fullfile(here, 'datos', 'base_de_casos_cbr.mat');
+    if ~isfile(mat_path)
+        fprintf('Generando base de casos F-E primero...\n');
+        exportar_base_casos_fe();
     end
 
     % Crear (o regenerar) la funcion de envoltura para el bloque MATLAB Function
@@ -30,10 +31,14 @@ function crear_modelo_orquestado()
     mdl = 'modelo_cbr_vlm_orquestado';
     if bdIsLoaded(mdl); close_system(mdl, 0); end
     new_system(mdl);
-    open_system(mdl);
 
-    % ── Constant: features de ejemplo (caso histeresis marcada) ─────────────
-    feats = '[0.8922 1.2031 0.01753 0.04359 -0.002637 2.0806 30.9996]';
+    % ── Constant: features de ejemplo tomadas de la base F-E ACTIVA ─────────
+    % Se usa un caso real de histeresis marcada para que el Display muestre
+    % clase=3 con alta confianza (escala F-E vigente, no la cruda antigua).
+    S = load(mat_path);
+    ej = find(S.hist_label == 3, 1);
+    if isempty(ej); ej = 1; end
+    feats = ['[' num2str(S.case_base(ej, :), '%.6g ') ']'];
     add_block('simulink/Sources/Constant', [mdl '/Features'], ...
         'Value', feats, 'Position', [40 120 150 160]);
 
@@ -58,10 +63,13 @@ function crear_modelo_orquestado()
     set_param(mdl, 'SolverType','Fixed-step', 'Solver','FixedStepDiscrete', ...
               'FixedStep','1', 'StopTime','0');
 
-    save_system(mdl, fullfile(here, [mdl '.slx']));
-    fprintf('\nModelo creado: %s.slx\n', mdl);
-    fprintf('Pulsa Run. Nota: si el VLM esta disponible, el caso de ejemplo (alta confianza)\n');
-    fprintf('resuelve por CBR sin llamar al VLM (fuente_cod=1).\n\n');
+    slx = fullfile(here, [mdl '.slx']);
+    save_system(mdl, slx);
+    open_system(mdl);
+    fprintf('\nModelo creado y abierto: %s\n', slx);
+    fprintf('Pulsa Run. El caso de ejemplo (histeresis marcada, alta confianza) resuelve\n');
+    fprintf('por CBR sin llamar al VLM (fuente_cod=1). El VLM esta DESACTIVADO por defecto\n');
+    fprintf('(usar_vlm=false) para que el modelo corra al instante y sin red.\n\n');
 end
 
 
@@ -85,8 +93,8 @@ function escribir_envoltura(here)
 "    out = struct('clase_final',0,'caso_sel',0,'accion','','confianza',0," ...
     + "'fuente','CBR','flag_discrepancia',false,'retain_flag',false," ...
     + "'motivo','','estado',0,'topk',struct());" newline ...
-"    params = struct('K',3,'threshold',1.0,'tau_score',0.5,'tau_margen',0.05," ...
-    + "'modelo','cloud','usar_vlm',true,'img_b64','');" newline ...
+"    params = struct('K',3,'threshold',0.6,'tau_score',0.85,'tau_margen',0.05," ...
+    + "'modelo','cloud','usar_vlm',false,'img_b64','','meta',struct());" newline ...
 "    out = orquestador_cbr_vlm(features, params);" newline ...
 "    clase_final = double(out.clase_final);" newline ...
 "    confianza   = double(out.confianza);" newline ...

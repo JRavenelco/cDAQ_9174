@@ -64,9 +64,14 @@ import pandas as pd
 try:
     import nidaqmx
     from nidaqmx.constants import AcquisitionType, TerminalConfiguration
+    try:
+        from nidaqmx.constants import AccelUnits, AccelSensitivityUnits, ExcitationSource, Coupling
+    except ImportError:
+        AccelUnits = AccelSensitivityUnits = ExcitationSource = Coupling = None
     HAS_NIDAQMX = True
 except ImportError:
     HAS_NIDAQMX = False
+    AccelUnits = AccelSensitivityUnits = ExcitationSource = Coupling = None
     print("⚠️ nidaqmx no disponible - Modo simulación")
 
 # ============================================
@@ -76,15 +81,18 @@ except ImportError:
 # NI 9205 - Fuerza (celda de carga a través de INA-4LC)
 FORCE_DEVICE = "cDAQ1Mod1"
 FORCE_CHANNELS = ["ai0"]  # Canal de la celda de carga
-FORCE_SAMPLE_RATE = 2500  # Hz
-FORCE_MIN_V = -5.0
-FORCE_MAX_V = 5.0
+DAQ_SAMPLE_RATE = 2560  # Hz, nativo del NI 9234 (51.2 kS/s / 20)
+FORCE_SAMPLE_RATE = DAQ_SAMPLE_RATE
+# Rango ±1 V del 9205: piso de ruido ~29 µV RMS (vs 121 µV en ±5 V) y ×5 de
+# resolucion (32.8 µV/LSB vs 164 µV/LSB). OJO: si el pico amplificado supera ±1 V, satura.
+FORCE_MIN_V = -1.0
+FORCE_MAX_V = 1.0
 FORCE_TERMINAL = TerminalConfiguration.DIFF if HAS_NIDAQMX else None
 
 # NI 9234 - Aceleración (1 CANAL: bancada)
 ACCEL_DEVICE = "cDAQ1Mod2"
 ACCEL_CHANNELS = ["ai0"]  # Solo acelerómetro en bancada
-ACCEL_SAMPLE_RATE = 2000  # Hz
+ACCEL_SAMPLE_RATE = DAQ_SAMPLE_RATE
 
 # SIN CALIBRACIÓN - Datos crudos en voltios
 # La fuerza se guardará directamente en V
@@ -99,6 +107,10 @@ INA849_GANANCIA = "N/A"
 
 # Parámetros de los acelerómetros PCB 352C33
 ACEL_SENSIBILIDAD_MV_G = 100.0  # mV/g (ambos sensores)
+ACCEL_MIN_G = -50.0
+ACCEL_MAX_G = 50.0
+ACCEL_IEPE_CURRENT_A = 0.004  # 4 mA IEPE interno del NI 9234
+ACCEL_COUPLING = "AC"
 # ai0: Acelerómetro en BANCADA
 # ai1: Acelerómetro en PIEZA
 
@@ -234,14 +246,29 @@ class AccelAcquisitionThread(threading.Thread):
         try:
             self.task = nidaqmx.Task()
             for ch in ACCEL_CHANNELS:
-                # NI 9234 con IEPE para cada canal
-                self.task.ai_channels.add_ai_accel_chan(
+                # NI 9234 con IEPE interno, unidades en g y acoplamiento AC.
+                accel_kwargs = {}
+                if AccelUnits is not None:
+                    accel_kwargs["units"] = AccelUnits.G
+                if AccelSensitivityUnits is not None:
+                    accel_kwargs["sensitivity_units"] = AccelSensitivityUnits.MILLIVOLTS_PER_G
+                if ExcitationSource is not None:
+                    accel_kwargs["current_excit_source"] = ExcitationSource.INTERNAL
+
+                accel_chan = self.task.ai_channels.add_ai_accel_chan(
                     f"{ACCEL_DEVICE}/{ch}",
                     sensitivity=ACEL_SENSIBILIDAD_MV_G,
-                    min_val=-50.0,
-                    max_val=50.0,
-                    current_excit_val=0.004  # 4 mA IEPE
+                    min_val=ACCEL_MIN_G,
+                    max_val=ACCEL_MAX_G,
+                    current_excit_val=ACCEL_IEPE_CURRENT_A,
+                    **accel_kwargs
                 )
+                if Coupling is not None:
+                    try:
+                        accel_chan.ai_coupling = Coupling.AC
+                        print("se logro")
+                    except Exception as e:
+                        print(f"⚠️ No se pudo configurar AC coupling en {ch}: {e}")
             self.task.timing.cfg_samp_clk_timing(
                 rate=ACCEL_SAMPLE_RATE,
                 sample_mode=AcquisitionType.CONTINUOUS,
@@ -1924,6 +1951,10 @@ class CaracterizacionFuerzaGUI(QMainWindow):
                 'file': filename,
                 'timestamp': timestamp,
                 'fs_hz': ACCEL_SAMPLE_RATE,
+                'fs_hz_accel': ACCEL_SAMPLE_RATE,
+                'accel_sensitivity_mV_g': ACEL_SENSIBILIDAD_MV_G,
+                'accel_iepe_current_a': ACCEL_IEPE_CURRENT_A,
+                'accel_coupling': ACCEL_COUPLING,
                 'n_samples': int(n),
                 'duration_s': round(float(n / ACCEL_SAMPLE_RATE), 3),
                 'experiment_mode': 'ACCEL_ONLY',
@@ -1985,6 +2016,11 @@ class CaracterizacionFuerzaGUI(QMainWindow):
             'file': filename,
             'timestamp': timestamp,
             'fs_hz': FORCE_SAMPLE_RATE,
+            'fs_hz_force': FORCE_SAMPLE_RATE,
+            'fs_hz_accel': ACCEL_SAMPLE_RATE,
+            'accel_sensitivity_mV_g': ACEL_SENSIBILIDAD_MV_G,
+            'accel_iepe_current_a': ACCEL_IEPE_CURRENT_A,
+            'accel_coupling': ACCEL_COUPLING,
             'n_samples': int(n),
             'duration_s': round(float(n / FORCE_SAMPLE_RATE), 3),
             'experiment_mode': self.experiment_mode,
@@ -2070,3 +2106,5 @@ if __name__ == "__main__":
     print("="*60 + "\n")
     
     sys.exit(app.exec_())
+
+
