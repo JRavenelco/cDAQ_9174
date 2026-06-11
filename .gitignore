@@ -75,6 +75,18 @@ Pruebas/src/remote_monitoring/logs/cdaq_remote_202602*_inference.csv
 !Pruebas/src/caracterizacion_fuerza/resumen_gemini/RESUMEN_ANALISIS_CORTE_CNC.md
 !Pruebas/src/caracterizacion_fuerza/resumen_gemini/PROMPT_GEMINI.md
 
+# ── Whitelist: adquisición fuerza Pico/ADS1219 + análisis FFT (2026-06) ──
+!Pruebas/src/caracterizacion_fuerza/caracterizacion_fuerza_ADS1219.py
+!Pruebas/src/caracterizacion_fuerza/caracterizacion_fuerza_PicoADS1219.py
+!Pruebas/src/caracterizacion_fuerza/monitor_ads1219_terminal.py
+!Pruebas/src/caracterizacion_fuerza/interfaz_fft_sin_promedio.py
+!Pruebas/src/caracterizacion_fuerza/firmware_pico_ads1219/
+!Pruebas/src/caracterizacion_fuerza/firmware_pico_ads1219/.gitignore
+!Pruebas/src/caracterizacion_fuerza/firmware_pico_ads1219/*.c
+!Pruebas/src/caracterizacion_fuerza/firmware_pico_ads1219/*.txt
+!Pruebas/src/caracterizacion_fuerza/firmware_pico_ads1219/*.cmake
+!Pruebas/src/caracterizacion_fuerza/firmware_pico_ads1219/*.md
+
 # ── Whitelist: razonador_casos (Razonador CBR) ──
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/
 !Pruebas/src/caracterizacion_fuerza/razonador_casos/*.py
